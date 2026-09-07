@@ -1,0 +1,18 @@
+# Runtime data (recreated automatically, machine/user-specific)
+data/*.db
+data/*.jsonl
+data/*.json
+!data/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+venv/
+.venv/
+*.egg-info/
+
+# OS-specific junk
+.DS_Store
+Thumbs.db
+desktop.ini

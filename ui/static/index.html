@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PortableAI</title>
+<link rel="icon" type="image/svg+xml" href="logo.svg">
+<link rel="stylesheet" href="style.css?v=chat-ux-1">
+</head>
+<body>
+<div class="app">
+  <div id="sidebarBackdrop" class="sidebar-backdrop"></div>
+
+  <aside id="sidebar" class="sidebar">
+    <div class="sidebar-brand"><img src="logo.svg" alt="" class="brand-icon">PortableAI</div>
+    <div class="sidebar-header">
+      <button id="newChatBtn" class="new-chat-btn" type="button">
+        <span class="plus">+</span> New chat
+      </button>
+    </div>
+
+    <div class="sidebar-section chats-section">
+      <div class="sidebar-label-row">
+        <span class="sidebar-label">Chats</span>
+        <label class="archived-toggle">
+          <input type="checkbox" id="archivedToggle"> Archived
+        </label>
+      </div>
+      <input id="searchInput" class="search-input" type="text" placeholder="Search chats…">
+      <div id="conversationList" class="conversation-list"><!-- populated by app.js --></div>
+    </div>
+
+    <div class="sidebar-footer">
+      <button id="statusPill" class="status-pill status-unknown">
+        <span class="dot"></span><span id="statusText">checking Ollama…</span>
+      </button>
+      <button id="logsBtn" class="sidebar-icon-btn" type="button">Logs</button>
+      <button id="settingsBtn" class="sidebar-icon-btn" type="button">Settings <span id="settingsUpdateDot" class="update-dot hidden" title="Update available">●</span></button>
+    </div>
+  </aside>
+
+  <main class="chat-area">
+    <div class="chat-header">
+      <button id="menuBtn" class="header-icon-btn menu-btn" type="button" aria-label="Open chats" aria-expanded="false" aria-controls="sidebar">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 7h16M4 12h16M4 17h16"/>
+        </svg>
+      </button>
+      <div class="chat-header-picker">
+        <button id="personaPickerBtn" class="persona-picker-btn" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="personaPickerMenu">
+          <span class="picker-copy">
+            <span id="chatPersonaName" class="chat-header-persona">Pick a persona</span>
+            <span id="chatModelBadge" class="chat-header-model">—</span>
+          </span>
+          <svg class="picker-caret" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 9l6 6 6-6"/>
+          </svg>
+        </button>
+        <div id="personaPickerMenu" class="picker-menu hidden" role="dialog" aria-label="Choose persona and model">
+          <div class="picker-label">Persona</div>
+          <div id="personaPickerList" class="picker-list"><!-- populated by app.js --></div>
+          <div class="picker-label">Model</div>
+          <select id="modelSelect" class="model-select" aria-label="Model">
+            <option value="">Persona default</option>
+          </select>
+        </div>
+      </div>
+      <button id="headerNewChatBtn" class="header-icon-btn header-new-chat-btn" type="button" aria-label="New chat" title="New chat">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 5v14M5 12h14"/>
+        </svg>
+      </button>
+    </div>
+
+    <div id="messages" class="messages">
+      <div class="empty-state">
+        <h1 id="personaHeading">Pick a persona and say hello</h1>
+        <p id="personaSubheading" class="muted"></p>
+      </div>
+    </div>
+
+    <form id="composer" class="composer">
+      <textarea id="input" placeholder="Message the persona…" rows="1"></textarea>
+      <button type="submit" id="sendBtn">Send</button>
+    </form>
+  </main>
+
+</div>
+
+<!-- Settings modal -->
+<div id="settingsModal" class="modal-backdrop hidden">
+  <div class="modal settings-window">
+    <aside class="settings-nav">
+      <label class="settings-nav-search">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="11" cy="11" r="7"/>
+          <path d="M20 20l-3.5-3.5"/>
+        </svg>
+        <input id="settingsSearch" type="search" placeholder="Search settings…" autocomplete="off">
+      </label>
+
+      <div class="settings-nav-group">
+        <div class="settings-nav-group-label">Options</div>
+        <button type="button" class="settings-nav-item active" data-pane="general" data-search="general ollama url personas startup">
+          <svg class="settings-nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/>
+            <line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/>
+            <line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/>
+            <line x1="2" y1="14" x2="6" y2="14"/><line x1="10" y1="8" x2="14" y2="8"/><line x1="18" y1="16" x2="22" y2="16"/>
+          </svg>
+          <span>General</span>
+        </button>
+        <button type="button" class="settings-nav-item" data-pane="installed" data-search="installed models storage gguf disk">
+          <svg class="settings-nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>
+            <path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>
+          </svg>
+          <span>Installed models</span>
+        </button>
+        <button type="button" class="settings-nav-item" data-pane="download" data-search="download catalog pull library">
+          <svg class="settings-nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" x2="12" y1="15" y2="3"/>
+          </svg>
+          <span>Download</span>
+        </button>
+        <button type="button" class="settings-nav-item" data-pane="updates" data-search="updates version catalog check">
+          <svg class="settings-nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/>
+            <polyline points="21 3 21 8 16 8"/>
+          </svg>
+          <span>Updates</span>
+          <span id="settingsNavUpdateDot" class="settings-nav-badge update-dot hidden" title="Update available">●</span>
+        </button>
+      </div>
+
+      <div class="settings-nav-group">
+        <div class="settings-nav-group-label">Connect</div>
+        <button type="button" class="settings-nav-item" data-pane="pairing" data-search="phone pairing pin lan device ios">
+          <svg class="settings-nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="7" y="2" width="10" height="20" rx="2"/>
+            <path d="M11 18h2"/>
+          </svg>
+          <span>Phone pairing</span>
+        </button>
+      </div>
+    </aside>
+    <div class="settings-main">
+      <div class="settings-main-header">
+        <h2 id="settingsPaneTitle">General</h2>
+        <button class="close-btn" data-close="settingsModal" type="button">×</button>
+      </div>
+      <div class="settings-main-body">
+        <section id="pane-general" class="settings-pane">
+          <div class="setting-item">
+            <div class="setting-item-info">
+              <div class="setting-item-name">Ollama base URL</div>
+              <div class="setting-item-description">Local Ollama API the UI talks to. Default is http://localhost:11434.</div>
+            </div>
+            <input id="baseUrlInput" class="setting-input" type="text" placeholder="http://localhost:11434">
+          </div>
+          <div class="setting-item">
+            <div class="setting-item-info">
+              <div class="setting-item-name">Build personas on startup</div>
+              <div class="setting-item-description">Create persona models when the server starts. Off means they build lazily on first chat. Personas themselves live in the personas/ folder as .Modelfile files.</div>
+            </div>
+            <input id="autoBuildInput" class="toggle" type="checkbox">
+          </div>
+        </section>
+
+        <section id="pane-installed" class="settings-pane hidden">
+          <div class="setting-item">
+            <div class="setting-item-info">
+              <div class="setting-item-name">Storage path</div>
+              <div class="setting-item-description">Where Ollama keeps GGUF blobs on this machine.</div>
+            </div>
+            <code id="modelsPathHint" class="path-hint">—</code>
+          </div>
+          <div id="modelsTable" class="models-table"></div>
+        </section>
+
+        <section id="pane-download" class="settings-pane hidden">
+          <p class="pane-lede">
+            Curated list, not the full Ollama library. See
+            <a href="https://ollama.com/library" target="_blank" rel="noopener">ollama.com/library</a>
+            for everything else. Larger pulls can take several minutes — the button stays on “Downloading…” until Ollama finishes (no progress bar yet).
+          </p>
+          <input id="catalogSearch" class="setting-search" type="search" placeholder="Search models…">
+          <div id="catalogTable" class="models-table"></div>
+        </section>
+
+        <section id="pane-updates" class="settings-pane hidden">
+          <p class="pane-lede">
+            Off by default — nothing here makes a network call unless you set a URL.
+            Point it at a JSON file you publish yourself (for example a raw GitHub URL)
+            with the shape
+            <code>{"app_version": "...", "catalog_version": "...", "message": "...", "notes_url": "..."}</code>.
+          </p>
+          <div class="setting-item setting-item-stack">
+            <div class="setting-item-info">
+              <div class="setting-item-name">Update check URL</div>
+              <div class="setting-item-description">Optional. Empty means the feature is disabled and Check now will not hit the network.</div>
+            </div>
+            <input id="updateUrlInput" class="setting-input setting-input-full" type="url" placeholder="https://example.com/update-manifest.json">
+          </div>
+          <div class="setting-item">
+            <div class="setting-item-info">
+              <div class="setting-item-name">Check automatically on startup</div>
+              <div class="setting-item-description">When on, the app requests your URL once at load and shows a dot next to Settings if app_version or catalog_version differs.</div>
+            </div>
+            <input id="autoCheckUpdatesInput" class="toggle" type="checkbox">
+          </div>
+          <div class="setting-item">
+            <div class="setting-item-info">
+              <div class="setting-item-name">Check now</div>
+              <div class="setting-item-description" id="updateStatusText">Compares your hosted JSON against this app’s baked-in versions.</div>
+            </div>
+            <button id="checkUpdatesBtn" class="download-btn" type="button">Check now</button>
+          </div>
+        </section>
+
+        <section id="pane-pairing" class="settings-pane hidden">
+          <p class="pane-lede">
+            On your phone’s browser (same WiFi/hotspot) or the PortableAI iOS
+            app, go to <code id="lanUrlText">—</code> and enter this PIN once.
+          </p>
+          <div class="setting-item setting-item-stack">
+            <div class="setting-item-info">
+              <div class="setting-item-name">Pairing PIN</div>
+              <div class="setting-item-description">Valid until a device claims it or you generate a new one.</div>
+            </div>
+            <div class="pairing-pin-row">
+              <span id="pairingPinText" class="pairing-pin">——————</span>
+              <button id="regeneratePinBtn" class="download-btn" type="button">New PIN</button>
+            </div>
+          </div>
+          <div class="setting-item setting-item-stack">
+            <div class="setting-item-info">
+              <div class="setting-item-name">Paired devices</div>
+              <div class="setting-item-description">Revoke a device to require a new PIN the next time it connects.</div>
+            </div>
+            <div id="pairedDevicesList" class="models-table"></div>
+          </div>
+        </section>
+      </div>
+      <div id="settingsFooter" class="settings-main-footer">
+        <button id="saveSettingsBtn" class="primary-btn" type="button">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Logs modal -->
+<div id="logsModal" class="modal-backdrop hidden">
+  <div class="modal modal-wide">
+    <div class="modal-header">
+      <h2>Request logs</h2>
+      <button class="close-btn" data-close="logsModal">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="logsList" class="logs-list"></div>
+    </div>
+    <div class="modal-footer">
+      <button id="clearLogsBtn" class="danger-btn">Clear logs</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js?v=chat-ux-1"></script>
+</body>
+</html>
