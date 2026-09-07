@@ -7,15 +7,54 @@ const state = {
   modelOverride: null,  // null = use persona's own base model
 };
 
+const DEVICE_TOKEN_KEY = "portableai.device_token";
+
 const el = (id) => document.getElementById(id);
 
+function getDeviceToken() {
+  try {
+    return localStorage.getItem(DEVICE_TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function setDeviceToken(token) {
+  try {
+    if (token) localStorage.setItem(DEVICE_TOKEN_KEY, token);
+    else localStorage.removeItem(DEVICE_TOKEN_KEY);
+  } catch {
+    // private mode / blocked storage -- pairing just won't persist
+  }
+}
+
+function guessDeviceName() {
+  const ua = navigator.userAgent || "";
+  if (/iPhone/i.test(ua)) return "iPhone browser";
+  if (/iPad/i.test(ua)) return "iPad browser";
+  if (/Android/i.test(ua)) return "Android browser";
+  return "LAN browser";
+}
+
 async function api(path, opts = {}) {
-  const resp = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...opts,
-  });
+  const { headers: extraHeaders, ...rest } = opts;
+  const headers = { "Content-Type": "application/json", ...extraHeaders };
+  const token = getDeviceToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const resp = await fetch(path, { ...rest, headers });
   const data = await resp.json().catch(() => ({}));
-  if (!resp.ok) throw new Error(data.error || `request failed: ${resp.status}`);
+  if (!resp.ok) {
+    const pairingRequired = resp.status === 401 && data.error === "pairing required";
+    if (pairingRequired) {
+      setDeviceToken("");
+      showPairingPrompt();
+    }
+    const err = new Error(data.error || `request failed: ${resp.status}`);
+    err.status = resp.status;
+    err.pairingRequired = pairingRequired;
+    throw err;
+  }
   return data;
 }
 
@@ -354,7 +393,15 @@ function renderPersonaPicker() {
 }
 
 async function loadPersonas() {
-  state.personas = await api("/api/personas");
+  try {
+    const data = await api("/api/personas");
+    state.personas = Array.isArray(data) ? data : [];
+  } catch (err) {
+    state.personas = [];
+    if (!err.pairingRequired) {
+      console.warn("Could not load personas:", err.message);
+    }
+  }
   if (!state.activePersona && state.personas.length) {
     state.activePersona = state.personas[0].id;
   }
@@ -411,6 +458,8 @@ el("personaPickerMenu").addEventListener("click", (e) => {
   e.stopPropagation();
 });
 
+const SIDEBAR_COLLAPSED_KEY = "portableai.sidebar-collapsed";
+
 function isMobileLayout() {
   return window.matchMedia("(max-width: 859px)").matches;
 }
@@ -433,15 +482,45 @@ function toggleMobileSidebar() {
   else openMobileSidebar();
 }
 
+function setSidebarCollapsed(collapsed) {
+  document.documentElement.classList.toggle("sidebar-collapsed", collapsed);
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0");
+  } catch {
+    // private mode / blocked storage -- preference just won't persist
+  }
+  const label = collapsed ? "Show sidebar" : "Hide sidebar";
+  ["sidebarToggle", "sidebarOpenBtn"].forEach((id) => {
+    const btn = el(id);
+    btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    btn.title = label;
+    btn.setAttribute("aria-label", label);
+  });
+}
+
+function toggleDesktopSidebar() {
+  setSidebarCollapsed(!document.documentElement.classList.contains("sidebar-collapsed"));
+}
+
 el("menuBtn").addEventListener("click", (e) => {
   e.stopPropagation();
   toggleMobileSidebar();
 });
 el("sidebarBackdrop").addEventListener("click", closeMobileSidebar);
+el("sidebarToggle").addEventListener("click", toggleDesktopSidebar);
+el("sidebarOpenBtn").addEventListener("click", toggleDesktopSidebar);
+document.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "b") return;
+  e.preventDefault();
+  if (isMobileLayout()) toggleMobileSidebar();
+  else toggleDesktopSidebar();
+});
 
 window.addEventListener("resize", () => {
   if (!isMobileLayout()) closeMobileSidebar();
 });
+
+setSidebarCollapsed(document.documentElement.classList.contains("sidebar-collapsed"));
 
 function updateChatHeader() {
   const persona = state.personas.find((p) => p.id === state.activePersona);
@@ -509,6 +588,8 @@ function appendTyping() {
 }
 
 async function sendMessage(text) {
+  closePersonaPicker();
+  closeMobileSidebar();
   if (!state.activePersona) {
     appendMessage("error", "Pick a persona first.");
     return;
@@ -783,7 +864,7 @@ document.querySelectorAll("[data-close]").forEach((btn) => {
 
 document.querySelectorAll(".modal-backdrop").forEach((backdrop) => {
   backdrop.addEventListener("click", (e) => {
-    if (e.target === backdrop) closeModal(backdrop.id);
+    if (e.target === backdrop && backdrop.id !== "pairingModal") closeModal(backdrop.id);
   });
 });
 
@@ -955,6 +1036,53 @@ el("pairedDevicesList").addEventListener("click", async (e) => {
 el("regeneratePinBtn").addEventListener("click", async () => {
   await api("/api/pairing/pin/regenerate", { method: "POST" });
   loadPairingInfo();
+});
+
+function showPairingPrompt() {
+  const modal = el("pairingModal");
+  if (!modal || !modal.classList.contains("hidden")) return;
+  modal.classList.remove("hidden");
+  el("pairingError").textContent = "";
+  el("pairingPinInput").value = "";
+  setTimeout(() => el("pairingPinInput").focus(), 50);
+}
+
+function hidePairingPrompt() {
+  el("pairingModal").classList.add("hidden");
+}
+
+async function reloadAfterPairing() {
+  await loadPersonas();
+  await loadModels();
+  await loadConversations();
+  await refreshStatus();
+}
+
+el("pairingForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const pin = el("pairingPinInput").value.trim();
+  const errEl = el("pairingError");
+  const btn = el("pairingSubmitBtn");
+  if (!/^\d{4,8}$/.test(pin)) {
+    errEl.textContent = "Enter the PIN shown in Settings on the computer running PortableAI.";
+    return;
+  }
+  btn.disabled = true;
+  errEl.textContent = "";
+  try {
+    const data = await api("/api/pairing/claim", {
+      method: "POST",
+      body: JSON.stringify({ pin, device_name: guessDeviceName() }),
+    });
+    if (!data.device_token) throw new Error("pairing did not return a token");
+    setDeviceToken(data.device_token);
+    hidePairingPrompt();
+    await reloadAfterPairing();
+  } catch (err) {
+    errEl.textContent = err.message || "Pairing failed.";
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 // ---------- Logs modal ----------

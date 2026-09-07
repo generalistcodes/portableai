@@ -5,14 +5,28 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PortableAI</title>
 <link rel="icon" type="image/svg+xml" href="logo.svg">
-<link rel="stylesheet" href="style.css?v=chat-ux-1">
+<link rel="stylesheet" href="style.css?v=sidebar-1">
+<script>
+  if (localStorage.getItem("portableai.sidebar-collapsed") === "1") {
+    document.documentElement.classList.add("sidebar-collapsed");
+  }
+</script>
 </head>
 <body>
 <div class="app">
   <div id="sidebarBackdrop" class="sidebar-backdrop"></div>
 
-  <aside id="sidebar" class="sidebar">
-    <div class="sidebar-brand"><img src="logo.svg" alt="" class="brand-icon">PortableAI</div>
+  <aside id="sidebar" class="sidebar" aria-label="Sidebar">
+    <div class="sidebar-inner">
+    <div class="sidebar-brand-row">
+      <div class="sidebar-brand"><img src="logo.svg" alt="" class="brand-icon">PortableAI</div>
+      <button id="sidebarToggle" class="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="true" title="Hide sidebar">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/>
+          <path d="M9.5 4.5v15"/>
+        </svg>
+      </button>
+    </div>
     <div class="sidebar-header">
       <button id="newChatBtn" class="new-chat-btn" type="button">
         <span class="plus">+</span> New chat
@@ -37,6 +51,7 @@
       <button id="logsBtn" class="sidebar-icon-btn" type="button">Logs</button>
       <button id="settingsBtn" class="sidebar-icon-btn" type="button">Settings <span id="settingsUpdateDot" class="update-dot hidden" title="Update available">●</span></button>
     </div>
+    </div>
   </aside>
 
   <main class="chat-area">
@@ -44,6 +59,12 @@
       <button id="menuBtn" class="header-icon-btn menu-btn" type="button" aria-label="Open chats" aria-expanded="false" aria-controls="sidebar">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M4 7h16M4 12h16M4 17h16"/>
+        </svg>
+      </button>
+      <button id="sidebarOpenBtn" class="sidebar-toggle sidebar-toggle-open" type="button" aria-controls="sidebar" aria-expanded="true" title="Show sidebar">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/>
+          <path d="M9.5 4.5v15"/>
         </svg>
       </button>
       <div class="chat-header-picker">
@@ -251,6 +272,28 @@
   </div>
 </div>
 
+<!-- LAN pairing: phone browsers have no Bearer token until they claim a PIN -->
+<div id="pairingModal" class="modal-backdrop pairing-gate hidden">
+  <div class="modal" role="dialog" aria-labelledby="pairingTitle" aria-modal="true">
+    <div class="modal-header">
+      <h2 id="pairingTitle">Pair this device</h2>
+    </div>
+    <form id="pairingForm" class="pairing-form">
+      <div class="modal-body">
+        <p class="muted">This browser isn’t paired yet, so personas and models can’t load. On the computer running PortableAI, open Settings → Phone pairing and enter that PIN here.</p>
+        <label class="field">
+          <span>Pairing PIN</span>
+          <input id="pairingPinInput" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" placeholder="000000" aria-describedby="pairingError">
+        </label>
+        <p id="pairingError" class="pairing-error" role="alert"></p>
+      </div>
+      <div class="modal-footer">
+        <button id="pairingSubmitBtn" class="primary-btn" type="submit">Pair</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <!-- Logs modal -->
 <div id="logsModal" class="modal-backdrop hidden">
   <div class="modal modal-wide">
@@ -267,6 +310,6 @@
   </div>
 </div>
 
-<script src="app.js?v=chat-ux-1"></script>
+<script src="app.js?v=sidebar-1"></script>
 </body>
 </html>

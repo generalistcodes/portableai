@@ -422,6 +422,32 @@ def test_pairing_claim_works_from_lan(client):
     assert "device_token" in resp.get_json()
 
 
+def test_lan_web_client_loads_personas_and_models_after_claim(client):
+    """Phone/LAN browser: HTML is public, APIs 401 until claim, then Bearer works."""
+    assert client.get("/", environ_overrides=LAN_ENV).status_code == 200
+    assert client.get("/api/personas", environ_overrides=LAN_ENV).status_code == 401
+    assert client.get("/api/models", environ_overrides=LAN_ENV).status_code == 401
+
+    pin = client.get("/api/pairing/pin").get_json()["pin"]
+    claim = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"pin": pin, "device_name": "Phone browser"}),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+    )
+    assert claim.status_code == 200
+    token = claim.get_json()["device_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    personas = client.get("/api/personas", environ_overrides=LAN_ENV, headers=headers)
+    models = client.get("/api/models", environ_overrides=LAN_ENV, headers=headers)
+    assert personas.status_code == 200
+    assert isinstance(personas.get_json(), list)
+    assert len(personas.get_json()) >= 1
+    assert models.status_code == 200
+    assert "models" in models.get_json()
+
+
 def test_pairing_claim_wrong_pin_from_lan_is_401(client):
     resp = client.post(
         "/api/pairing/claim",
