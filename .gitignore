@@ -1,0 +1,21 @@
+# Virtualenvs are OS-specific — never copy these between machines.
+.venv/
+.venv.bak/
+venv/
+env/
+
+# Python bytecode / test cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Runtime data — machine-specific chats, logs, pairing state
+data/*.db
+data/*.jsonl
+data/pairing.json
+data/settings.json
