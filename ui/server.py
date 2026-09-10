@@ -38,8 +38,12 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from ollama_client import OllamaClient, OllamaError  # noqa: E402
-from persona_loader import ModelfileParseError, load_persona_file  # noqa: E402
+from ollama_client import (  # noqa: E402
+    INCOMPLETE_RESPONSE_MESSAGE,
+    OllamaClient,
+    OllamaError,
+)
+from persona_loader import ModelfileParseError, humanize_persona_id, load_persona_file  # noqa: E402
 import conversation_store as store  # noqa: E402
 import pairing_store  # noqa: E402
 
@@ -69,16 +73,48 @@ PORT = 5050
 BIND_HOST = "0.0.0.0"  # all IPv4 interfaces; phones on the LAN need this
 
 app = Flask(__name__, static_folder=None)
+app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024  # 1MB; Flask returns 413 above this
+
+# Ollama mid-request failures that should never become Werkzeug HTML 500s.
+_OLLAMA_CALL_ERRORS = (OllamaError, requests.ConnectionError, requests.Timeout, json.JSONDecodeError)
+
+
+def _ollama_error_message(exc: BaseException) -> str:
+    if isinstance(exc, (requests.ConnectionError, requests.Timeout)):
+        return "Lost connection to Ollama mid-request."
+    if isinstance(exc, json.JSONDecodeError):
+        return INCOMPLETE_RESPONSE_MESSAGE
+    return str(exc)
 
 # Tracks which persona/model-variant names we've already `create`d in this
 # process, so we don't re-POST /api/create on every single chat message.
 _built_personas: set[str] = set()
 
-# Admin-only pairing endpoints: viewing/regenerating the PIN and managing
-# paired devices must never be reachable from the LAN, only from the
-# machine physically running the server (checked by remote_addr below).
+# Admin-only: these must never be reachable from the LAN, even with a
+# valid device token — only from the machine physically running the
+# server (checked by remote_addr below). Pairing PIN/QR/devices, logs,
+# settings, and model pull are the sensitive set.
+#
+# Catalog / updates decision: also admin-only. /api/models/catalog is a
+# curated public list, but the response marks which models are installed
+# here (local inventory) and the download UI is pull-adjacent.
+# /api/updates/check is read-only version JSON with no user data, but it
+# hits a URL taken from settings (outbound request a paired phone should
+# not trigger). /api/models/check-update actually re-pulls. If catalog
+# were a static file with no installed flags and no secrets, LAN-with-
+# token would be acceptable; that is not the current shape.
 _ADMIN_ONLY_PATHS_PREFIX = "/api/pairing/devices"
-_ADMIN_ONLY_PATHS = {"/api/pairing/pin", "/api/pairing/pin/regenerate", "/api/pairing/qr.svg"}
+_ADMIN_ONLY_PATHS = {
+    "/api/pairing/pin",
+    "/api/pairing/pin/regenerate",
+    "/api/pairing/qr.svg",
+    "/api/logs",
+    "/api/settings",
+    "/api/models/pull",
+    "/api/models/catalog",
+    "/api/models/check-update",
+    "/api/updates/check",
+}
 
 # A LAN device without a token yet must still be able to reach these to
 # pair at all, or to do a basic reachability check before pairing.
@@ -374,6 +410,33 @@ def _db() -> "sqlite3.Connection":
     return store.connect(DB_FILE)
 
 
+@app.errorhandler(store.ChatDatabaseError)
+@app.errorhandler(sqlite3.DatabaseError)
+def _handle_corrupt_chat_db(_err):
+    return jsonify({"error": "chat history database appears corrupted"}), 500
+
+
+@app.errorhandler(413)
+def _handle_request_too_large(_err):
+    return jsonify({"error": "request too large"}), 413
+
+
+def _startup_check_chat_db() -> None:
+    """Log a loud warning for a wiped or malformed chats.db without
+    crashing the process — conversation routes then return JSON 500."""
+    DATA_DIR.mkdir(exist_ok=True)
+    try:
+        conn = store.connect(DB_FILE)
+        conn.close()
+    except store.ChatDatabaseError:
+        print(
+            f"WARNING: chat history database {DB_FILE} appears corrupted. "
+            "Conversation routes will return an error until it is repaired "
+            "or replaced. Silent history loss is worse than a visible error.",
+            file=sys.stderr,
+        )
+
+
 def _log(entry: dict) -> None:
     DATA_DIR.mkdir(exist_ok=True)
     entry = {"timestamp": time.time(), **entry}
@@ -476,13 +539,22 @@ def api_personas():
             personas.append(
                 {
                     "id": name,
+                    "display_name": persona.resolved_display_name(name),
+                    "is_default": persona.is_default,
                     "base_model": persona.base_model,
                     "system_preview": (persona.system or "")[:160],
                     "parameters": persona.parameters,
                 }
             )
         except ModelfileParseError as e:
-            personas.append({"id": name, "error": str(e)})
+            personas.append(
+                {
+                    "id": name,
+                    "display_name": humanize_persona_id(name),
+                    "is_default": False,
+                    "error": str(e),
+                }
+            )
     return jsonify(personas)
 
 
@@ -493,8 +565,8 @@ def api_models():
         return jsonify({"models": [], "models_path_hint": _models_path_hint(), "error": "Ollama not reachable"}), 200
     try:
         raw_models = client.list_models()
-    except OllamaError as e:
-        return jsonify({"error": str(e)}), 502
+    except _OLLAMA_CALL_ERRORS as e:
+        return jsonify({"error": _ollama_error_message(e)}), 502
 
     models = []
     for m in raw_models:
@@ -537,7 +609,7 @@ def api_models_catalog():
     if client.is_available():
         try:
             installed_names = {m.get("name") for m in client.list_models()}
-        except OllamaError:
+        except _OLLAMA_CALL_ERRORS:
             pass
     for entry in catalog:
         entry["installed"] = entry["name"] in installed_names
@@ -557,8 +629,8 @@ def api_models_pull():
 
     try:
         client.pull_model(name)
-    except OllamaError as e:
-        return jsonify({"error": str(e)}), 502
+    except _OLLAMA_CALL_ERRORS as e:
+        return jsonify({"error": _ollama_error_message(e)}), 502
     return jsonify({"pulled": name})
 
 
@@ -584,8 +656,8 @@ def api_models_check_update():
 
     try:
         before = {m.get("name"): m.get("digest") for m in client.list_models()}
-    except OllamaError as e:
-        return jsonify({"error": str(e)}), 502
+    except _OLLAMA_CALL_ERRORS as e:
+        return jsonify({"error": _ollama_error_message(e)}), 502
 
     if name not in before:
         return jsonify({"error": f"'{name}' is not installed"}), 404
@@ -594,8 +666,8 @@ def api_models_check_update():
     try:
         client.pull_model(name)
         after = {m.get("name"): m.get("digest") for m in client.list_models()}
-    except OllamaError as e:
-        return jsonify({"error": str(e)}), 502
+    except _OLLAMA_CALL_ERRORS as e:
+        return jsonify({"error": _ollama_error_message(e)}), 502
 
     digest_after = after.get(name)
     return jsonify(
@@ -804,8 +876,12 @@ def api_chat():
 
     try:
         actual_model = _ensure_persona_built(client, persona_name, model_override)
-    except (FileNotFoundError, OllamaError) as e:
+    except FileNotFoundError as e:
         return jsonify({"error": f"could not build persona '{persona_name}': {e}"}), 500
+    except OllamaError as e:
+        return jsonify({"error": f"could not build persona '{persona_name}': {e}"}), 500
+    except (requests.ConnectionError, requests.Timeout, json.JSONDecodeError) as e:
+        return jsonify({"error": _ollama_error_message(e)}), 502
 
     conn = _db()
     try:
@@ -823,17 +899,18 @@ def api_chat():
         started = time.time()
         try:
             reply = client.chat(actual_model, messages)
-        except OllamaError as e:
+        except _OLLAMA_CALL_ERRORS as e:
+            err_msg = _ollama_error_message(e)
             _log(
                 {
                     "conversation_id": conversation_id,
                     "persona": persona_name,
                     "model_used": actual_model,
                     "message": message,
-                    "error": str(e),
+                    "error": err_msg,
                 }
             )
-            return jsonify({"error": str(e)}), 502
+            return jsonify({"error": err_msg}), 502
         latency_ms = round((time.time() - started) * 1000)
 
         store.add_message(conn, conversation_id, "user", message)
@@ -1119,6 +1196,7 @@ def print_listen_info(port: int = PORT) -> None:
 def run_app(port: int = PORT) -> None:
     """Bind all interfaces so phones on the LAN can pair. --stop/--restart
     still identify this process by whatever is listening on `port`."""
+    _startup_check_chat_db()
     print_listen_info(port)
     # First run on Windows/macOS may prompt a firewall permission dialog
     # the moment this binds to a non-loopback interface; that's expected
@@ -1128,6 +1206,7 @@ def run_app(port: int = PORT) -> None:
 
 if __name__ == "__main__":
     ensure_port_available(PORT)
+    _startup_check_chat_db()
 
     settings = _load_settings()
     if settings.get("auto_build_on_startup"):

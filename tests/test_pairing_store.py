@@ -1,5 +1,7 @@
+import json
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -77,6 +79,53 @@ def test_claim_pin_locks_out_after_max_attempts(tmp_path):
         assert store.claim_pin(path, "999999", "attacker") is None
     # PIN should now be invalidated even though it was never guessed correctly
     assert store.claim_pin(path, pin, "legitimate device") is None
+    data = json.loads(path.read_text())
+    assert data["current_pin"] is None
+    assert data["failed_attempts"] == 0
+
+
+def test_save_is_valid_json_after_claim(tmp_path):
+    path = tmp_path / "pairing.json"
+    pin = store.generate_pin(path)
+    store.claim_pin(path, pin, "Device")
+    json.loads(path.read_text())  # must not raise JSONDecodeError
+
+
+def test_concurrent_wrong_pins_lock_out_exactly_once(tmp_path):
+    """20 concurrent wrong PINs: lockout after 5 failures, file never torn."""
+    path = tmp_path / "pairing.json"
+    pin = store.generate_pin(path)
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        futures = [pool.submit(store.claim_pin, path, "000000", "attacker") for _ in range(20)]
+        results = [f.result() for f in as_completed(futures)]
+    assert all(r is None for r in results)
+    assert store.get_current_pin(path) is None
+    assert store.claim_pin(path, pin, "late legitimate") is None
+    data = json.loads(path.read_text())
+    assert data["current_pin"] is None
+    assert isinstance(data["devices"], dict)
+
+
+def test_concurrent_correct_and_wrong_persists_issued_token(tmp_path):
+    """2 concurrent correct + 8 wrong: issued token is persisted, JSON intact."""
+    path = tmp_path / "pairing.json"
+    pin = store.generate_pin(path)
+
+    def attempt(i):
+        submitted = pin if i < 2 else "111111"
+        return store.claim_pin(path, submitted, f"device-{i}")
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = [pool.submit(attempt, i) for i in range(10)]
+        results = [f.result() for f in as_completed(futures)]
+
+    issued = [t for t in results if t is not None]
+    # PIN is single-use: at most one winner, and that token must be on disk.
+    assert len(issued) == 1
+    data = json.loads(path.read_text())
+    assert issued[0] in data["devices"]
+    assert store.is_valid_token(path, issued[0]) is True
+    assert data["current_pin"] is None
 
 
 def test_claim_pin_defaults_device_name(tmp_path):

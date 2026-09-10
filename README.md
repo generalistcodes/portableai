@@ -4,9 +4,10 @@
   <p><strong>Your own AI, fully local — chat from your browser or your phone, powered by models you control.</strong></p>
 </div>
 
-PortableAI is a self-hosted chat interface for Ollama. Build named
-personas with their own personality and behavior, chat with them from a
-ChatGPT-style dark-mode web UI or a companion iPhone app, and keep a full
+PortableAI is a self-hosted chat interface for Ollama. New chats start as
+a plain Assistant — like ChatGPT or Claude — and optional named personas
+(a terse mentor, a patient explainer, a translator) are one click away.
+Chat from a dark-mode web UI or a companion iPhone app, and keep a full
 searchable history — all running on your own machine, with nothing sent
 to the cloud. Pull, browse, and update models from one place, and pair
 your phone over your local network in seconds.
@@ -43,6 +44,7 @@ and starts the chat UI in one step).
 
 ```
 personas/
+  assistant.Modelfile            # default: plain, no-personality Assistant
   no-nonsense-mentor.Modelfile   # terse, opinionated, always ends with a next step
   eli5-explainer.Modelfile       # warm, analogy-heavy, explains like you're 10
 src/
@@ -90,10 +92,12 @@ Fast unit tests (no Ollama required — this is what CI would run):
 pytest
 ```
 
-This runs 24 tests covering: Modelfile parsing edge cases (missing `FROM`,
+This runs 177 tests covering: Modelfile parsing edge cases (missing `FROM`,
 unterminated triple-quoted `SYSTEM` blocks, malformed `PARAMETER` lines,
-numeric casting), and the Ollama client's request/response handling with
-`requests` fully mocked — no network, no GPU, no waiting on inference.
+numeric casting), the Ollama client's request/response handling with
+`requests` fully mocked, the Flask UI backend (pairing, auth, chat history,
+logs, catalog), and SQLite conversation storage — no network, no GPU, no
+waiting on inference.
 
 Integration tests (spins up the real personas against a real, running
 Ollama):
@@ -122,8 +126,15 @@ external, slightly fuzzy dependency (smoke tests, not correctness proofs).
 
 ## Example prompts to try
 
-Good demo material for a blog post/screen recording — these make the two
-personas' differences obvious in a single reply:
+New chats land on **Assistant** with no special instructions. These are
+the kind of ordinary questions people actually type first:
+
+**assistant** (the default)
+- "Summarize the difference between TCP and UDP in a few sentences."
+- "Help me write a polite follow-up email after an interview."
+
+The named personas are optional — switch in the sidebar when you want a
+specific voice. These make their differences obvious in a single reply:
 
 **no-nonsense-mentor**
 - "Should I use REST or GraphQL for a small internal API?"
@@ -135,9 +146,9 @@ personas' differences obvious in a single reply:
 - "How does a blockchain work?"
 - "Why does my laptop get hot when I play games?"
 
-Worth trying the same question against both personas back-to-back (switch
-in the sidebar, keep the question identical) — that side-by-side contrast
-is usually the most convincing part of a persona demo.
+Worth trying the same question against Mentor and Explainer back-to-back
+(switch in the sidebar, keep the question identical) — that side-by-side
+contrast is usually the most convincing part of a persona demo.
 
 ## Chat UI
 
@@ -154,8 +165,10 @@ python ui/server.py        # same server, without the run.py launcher
 
 Then open **http://localhost:5050**. Other programs on port 5050 are never killed. You get:
 
-- **Sidebar persona picker** — reads every `.Modelfile` in `personas/`
-  automatically. Drop a new one in, reload the page, it shows up.
+- **Sidebar persona picker** — new chats start on Assistant. Other
+  `.Modelfile` personas in `personas/` show up by display name (Mentor,
+  Explainer, …) and are opt-in. Drop a new one in, reload the page, it
+  shows up.
 - **Settings** (gear icon) — change the Ollama base URL, and toggle
   whether personas get built automatically on server startup vs. lazily
   on first message.
@@ -347,10 +360,12 @@ Anything that isn't this machine itself needs to pair first: open
 Settings → "Phone pairing" on the desktop, and either scan the QR code
 shown there or manually enter the LAN address + 6-digit PIN. The PIN is
 single-use, expires after 5 minutes, and locks out after 5 wrong
-guesses. The QR code encodes everything needed in one scan — address,
-port, PIN, this machine's name, and the PIN's expiry — via a
-`portableai://pair?...` URI (see `docs/PHONE_PAIRING_PLAN.md` for the
-full schema and rationale).
+guesses. The QR code encodes a plain
+`http://<lan-ip>:<port>/?pair_pin=...` URL any phone camera can open
+(PIN carried as a query param so the web UI can pair on load). A
+`portableai://pair?...` deep link is still generated for a future native
+app handler, but that is not what the QR encodes (see
+`docs/PHONE_PAIRING_PLAN.md`).
 
 If Settings shows a warning instead of an address, the server couldn't
 find any active network interface — check that WiFi is actually
@@ -398,9 +413,7 @@ Roughly in order of what most affects the demo/blog experience:
    `.Modelfile` text files; there's no "create a persona" form.
 3. **Copy button on code blocks** — the markdown renderer produces
    `<pre><code>`, but there's no one-click copy affordance yet.
-4. **Pull a new model from the UI** — `ollama pull <model>` is still a
-   terminal command; the model selector only shows what's already local.
-5. **Stop-generation / regenerate** — no way to cancel a slow reply or
+4. **Stop-generation / regenerate** — no way to cancel a slow reply or
    ask the persona to try again without retyping the question.
 
 ## Extending this

@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -50,8 +51,22 @@ def test_logo_svg_is_served(client):
 def test_api_personas_lists_bundled_personas(client):
     resp = client.get("/api/personas")
     assert resp.status_code == 200
-    ids = {p["id"] for p in resp.get_json()}
-    assert {"no-nonsense-mentor", "eli5-explainer"}.issubset(ids)
+    payload = resp.get_json()
+    by_id = {p["id"]: p for p in payload}
+    assert {"assistant", "no-nonsense-mentor", "eli5-explainer"}.issubset(by_id)
+    assistant = by_id["assistant"]
+    assert assistant["display_name"] == "Assistant"
+    assert assistant["is_default"] is True
+    assert by_id["no-nonsense-mentor"]["is_default"] is False
+    assert by_id["eli5-explainer"]["is_default"] is False
+    assert by_id["no-nonsense-mentor"]["display_name"] == "Mentor"
+    assert by_id["eli5-explainer"]["display_name"] == "Explainer"
+    for p in payload:
+        assert "display_name" in p
+        assert "is_default" in p
+    defaults = [p for p in payload if p.get("is_default")]
+    assert len(defaults) == 1
+    assert defaults[0]["id"] == "assistant"
 
 
 def test_settings_roundtrip(client):
@@ -159,6 +174,53 @@ def test_chat_unknown_persona_returns_500(mock_cls, client):
         content_type="application/json",
     )
     assert resp.status_code == 500
+
+
+@patch("server.OllamaClient")
+def test_chat_connection_error_returns_json_502(mock_cls, client):
+    instance = mock_cls.return_value
+    instance.is_available.return_value = True
+    instance.chat.side_effect = requests.ConnectionError("Connection refused")
+    resp = client.post(
+        "/api/chat",
+        data=json.dumps({"persona": "no-nonsense-mentor", "message": "hi"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 502
+    assert resp.content_type.startswith("application/json")
+    assert resp.get_json()["error"] == "Lost connection to Ollama mid-request."
+
+
+@patch("server.OllamaClient")
+def test_chat_timeout_returns_json_502(mock_cls, client):
+    instance = mock_cls.return_value
+    instance.is_available.return_value = True
+    instance.chat.side_effect = requests.Timeout("read timed out")
+    resp = client.post(
+        "/api/chat",
+        data=json.dumps({"persona": "no-nonsense-mentor", "message": "hi"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 502
+    assert resp.content_type.startswith("application/json")
+    assert resp.get_json()["error"] == "Lost connection to Ollama mid-request."
+
+
+@patch("server.OllamaClient")
+def test_chat_truncated_json_returns_json_502(mock_cls, client):
+    instance = mock_cls.return_value
+    instance.is_available.return_value = True
+    instance.chat.side_effect = json.JSONDecodeError(
+        "Expecting value", '{"message": {"content": "hel', 12
+    )
+    resp = client.post(
+        "/api/chat",
+        data=json.dumps({"persona": "no-nonsense-mentor", "message": "hi"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 502
+    assert resp.content_type.startswith("application/json")
+    assert resp.get_json()["error"] == "Ollama returned an incomplete or invalid response."
 
 
 @patch("server.OllamaClient")
@@ -362,6 +424,47 @@ def test_search_conversations_by_query_param(client):
     assert not any(c["id"] == conv_id for c in misses)
 
 
+def test_conversations_garbage_db_returns_json_500(client, app):
+    app.DB_FILE.write_bytes(b"NOT-A-SQLITE-DATABASE")
+    resp = client.get("/api/conversations")
+    assert resp.status_code == 500
+    assert resp.content_type.startswith("application/json")
+    assert resp.get_json()["error"] == "chat history database appears corrupted"
+    assert b"<html" not in resp.data.lower()
+
+
+def test_conversations_truncated_db_returns_json_500(client, app):
+    conn = app._db()
+    conversation_store.create_conversation(conn, "no-nonsense-mentor", "llama3.2:3b", "local")
+    conn.close()
+    raw = app.DB_FILE.read_bytes()
+    app.DB_FILE.write_bytes(raw[:40])
+    resp = client.get("/api/conversations")
+    assert resp.status_code == 500
+    assert resp.content_type.startswith("application/json")
+    assert "corrupted" in resp.get_json()["error"]
+
+
+def test_conversations_zero_byte_db_warns_and_initializes(client, app, caplog):
+    app.DB_FILE.write_bytes(b"")
+    with caplog.at_level("WARNING", logger="conversation_store"):
+        resp = client.get("/api/conversations")
+    assert resp.status_code == 200
+    assert resp.get_json() == []
+    assert any("0 bytes" in r.message for r in caplog.records)
+
+
+def test_oversized_json_body_returns_json_413(client, app):
+    """1MB MAX_CONTENT_LENGTH: a ~10MB payload is rejected before Ollama."""
+    assert app.app.config["MAX_CONTENT_LENGTH"] == 1 * 1024 * 1024
+    huge = json.dumps({"persona": "no-nonsense-mentor", "message": "x" * (10 * 1024 * 1024)})
+    resp = client.post("/api/chat", data=huge, content_type="application/json")
+    assert resp.status_code == 413
+    assert resp.content_type.startswith("application/json")
+    assert "too large" in resp.get_json()["error"].lower()
+    assert b"<html" not in resp.data.lower()
+
+
 # ---------- LAN pairing / auth gate ----------
 
 LAN_ENV = {"REMOTE_ADDR": "192.168.1.50"}
@@ -389,7 +492,7 @@ def test_lan_ip_including_servers_own_requires_pairing(mock_enum, client):
     """Opening the UI at http://192.168.1.134:5050 is a remote client,
     even when that address belongs to this machine. Pairing is required."""
     env = {"REMOTE_ADDR": "192.168.1.134"}
-    for path in ("/api/personas", "/api/models", "/api/status", "/api/settings"):
+    for path in ("/api/personas", "/api/models", "/api/status"):
         resp = client.get(path, environ_overrides=env)
         assert resp.status_code == 401, path
         assert resp.get_json()["error"] == "pairing required"
@@ -436,7 +539,7 @@ def test_lan_request_without_token_is_rejected(client):
 
 @patch("server._enumerate_lan_ips", return_value=["192.168.1.134"])
 def test_foreign_lan_ip_still_requires_pairing_for_status_and_models(mock_enum, client):
-    for path in ("/api/status", "/api/models", "/api/personas", "/api/settings"):
+    for path in ("/api/status", "/api/models", "/api/personas"):
         resp = client.get(path, environ_overrides=LAN_ENV)
         assert resp.status_code == 401, path
         assert resp.get_json()["error"] == "pairing required"
@@ -499,6 +602,41 @@ def test_pairing_pin_regenerate_issues_new_pin_with_expiry(client):
 def test_pairing_devices_endpoint_rejects_lan(client):
     resp = client.get("/api/pairing/devices", environ_overrides=LAN_ENV)
     assert resp.status_code == 403
+
+
+def _lan_auth_headers(client, app, addr="192.168.1.77"):
+    """Pair a device and return (environ_overrides, headers) for LAN calls."""
+    pin = pairing_store.generate_pin(app.PAIRING_FILE)
+    token = pairing_store.claim_pin(app.PAIRING_FILE, pin, "LAN phone")
+    return {"REMOTE_ADDR": addr}, {"Authorization": f"Bearer {token}"}
+
+
+def test_logs_settings_pull_catalog_updates_reject_lan_with_valid_token(client, app):
+    """A paired LAN device must not reach admin-only routes (403, not 401).
+
+    Catalog and updates/check are admin-only: catalog reports which models
+    are installed here, and updates/check is pull-adjacent / settings-URL
+    outbound. See _ADMIN_ONLY_PATHS in server.py.
+    """
+    env, headers = _lan_auth_headers(client, app, addr="192.168.1.77")
+    cases = [
+        ("GET", "/api/logs", None),
+        ("DELETE", "/api/logs", None),
+        ("GET", "/api/settings", None),
+        ("POST", "/api/settings", {"base_url": "http://evil.example:11434"}),
+        ("POST", "/api/models/pull", {"name": "llama3.2:3b"}),
+        ("GET", "/api/models/catalog", None),
+        ("GET", "/api/updates/check", None),
+        ("POST", "/api/models/check-update", {"name": "llama3.2:3b"}),
+    ]
+    for method, path, body in cases:
+        kwargs = {"environ_overrides": env, "headers": headers}
+        if body is not None:
+            kwargs["data"] = json.dumps(body)
+            kwargs["content_type"] = "application/json"
+        resp = client.open(path, method=method, **kwargs)
+        assert resp.status_code == 403, f"{method} {path} -> {resp.status_code}"
+        assert resp.get_json()["error"] == "only available on the server machine itself"
 
 
 def test_pairing_claim_works_from_lan(client):

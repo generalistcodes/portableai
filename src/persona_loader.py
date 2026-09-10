@@ -34,11 +34,23 @@ _NUMERIC_PARAMETERS = {
 }
 
 
+def humanize_persona_id(persona_id: str) -> str:
+    """Turn a filename slug like 'no-nonsense-mentor' into a UI label."""
+    return persona_id.replace("-", " ").replace("_", " ").strip().title()
+
+
 @dataclass
 class Persona:
     base_model: str
     system: str | None = None
     parameters: dict = field(default_factory=dict)
+    display_name: str | None = None
+    is_default: bool = False
+
+    def resolved_display_name(self, persona_id: str) -> str:
+        if self.display_name:
+            return self.display_name
+        return humanize_persona_id(persona_id)
 
     def to_create_payload(self, name: str) -> dict:
         """Build the JSON body for POST /api/create (structured form)."""
@@ -59,6 +71,8 @@ def parse_modelfile(text: str) -> Persona:
     base_model: str | None = None
     system_parts: list[str] = []
     parameters: dict = {}
+    display_name: str | None = None
+    is_default = False
 
     i = 0
     while i < len(lines):
@@ -66,7 +80,15 @@ def parse_modelfile(text: str) -> Persona:
         line = raw_line.strip()
         i += 1
 
-        if not line or line.startswith("#"):
+        if not line:
+            continue
+
+        if line.startswith("#"):
+            meta_name, meta_default = _metadata_from_comment(line)
+            if meta_name is not None:
+                display_name = meta_name
+            if meta_default is not None:
+                is_default = meta_default
             continue
 
         if line.upper().startswith("FROM "):
@@ -128,7 +150,28 @@ def parse_modelfile(text: str) -> Persona:
         base_model=base_model,
         system="\n".join(system_parts).strip() or None,
         parameters=parameters,
+        display_name=display_name,
+        is_default=is_default,
     )
+
+
+def _metadata_from_comment(line: str) -> tuple[str | None, bool | None]:
+    """Read optional `# display_name: ...` / `# default: true` comments.
+
+    Unknown comments are ignored. Returns (display_name, is_default), where
+    either value is None if that key wasn't on this line.
+    """
+    body = line[1:].strip()
+    if ":" not in body:
+        return None, None
+    key, _, value = body.partition(":")
+    key = key.strip().lower()
+    value = value.strip()
+    if key == "display_name" and value:
+        return value, None
+    if key == "default":
+        return None, value.lower() in ("true", "yes", "1")
+    return None, None
 
 
 def load_persona_file(path: str | Path) -> Persona:

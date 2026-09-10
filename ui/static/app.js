@@ -339,6 +339,27 @@ function currentPersona() {
   return state.personas.find((p) => p.id === state.activePersona) || null;
 }
 
+function personaLabel(p) {
+  if (!p) return "";
+  return p.display_name || p.id;
+}
+
+function personaLabelById(id) {
+  const p = state.personas.find((x) => x.id === id);
+  return personaLabel(p) || id || "";
+}
+
+function pickDefaultPersona(personas) {
+  const list = personas || [];
+  return list.find((p) => p.is_default && p.id) || list.find((p) => p.id) || null;
+}
+
+function markPersonaActive(id) {
+  document.querySelectorAll(".persona-item").forEach((b) => {
+    b.classList.toggle("active", b.dataset.personaId === id);
+  });
+}
+
 function modelOverrideFromConversation(conv, persona) {
   if (!conv || !persona) return null;
   const used = (conv.model_used || "").replace(/:latest$/, "");
@@ -469,12 +490,15 @@ async function loadPersonas() {
   state.personas.forEach((p) => {
     const btn = document.createElement("button");
     btn.className = "persona-item" + (p.id === state.activePersona ? " active" : "");
-    btn.innerHTML = `<span class="persona-name">${p.id}</span><span class="persona-model">${p.base_model || "parse error"}</span>`;
+    btn.dataset.personaId = p.id;
+    btn.type = "button";
+    btn.innerHTML = `<span class="persona-name">${escapeHtml(personaLabel(p))}</span><span class="persona-model">${escapeHtml(p.base_model || "parse error")}</span>`;
     btn.onclick = () => selectPersona(p.id);
     list.appendChild(btn);
   });
-  if (!state.activePersona && state.personas.length) {
-    selectPersona(state.personas[0].id);
+  if (!state.activePersona) {
+    const landing = pickDefaultPersona(state.personas);
+    if (landing) selectPersona(landing.id);
   }
   populateModelSelect();
 }
@@ -483,10 +507,7 @@ function selectPersona(id) {
   closeMobileSidebar();
   state.activePersona = id;
   state.conversationId = null;
-  document.querySelectorAll(".persona-item").forEach((b) => {
-    const name = b.querySelector(".persona-name");
-    b.classList.toggle("active", name && name.textContent === id);
-  });
+  markPersonaActive(id);
   updateChatHeader();
   populateModelSelect();
   showEmptyState(currentPersona());
@@ -495,7 +516,7 @@ function selectPersona(id) {
 
 function updateChatHeader() {
   const persona = currentPersona();
-  el("chatPersonaName").textContent = persona ? persona.id : "Pick a persona";
+  el("chatPersonaName").textContent = persona ? personaLabel(persona) : "Assistant";
   el("chatModelBadge").textContent = state.modelOverride || (persona ? persona.base_model : "—");
 }
 
@@ -504,7 +525,7 @@ function emptyStateNode(persona) {
   div.className = "empty-state";
   const h1 = document.createElement("h1");
   h1.id = "personaHeading";
-  h1.textContent = persona ? persona.id : "Pick a persona and say hello";
+  h1.textContent = persona ? personaLabel(persona) : "Say hello";
   const p = document.createElement("p");
   p.id = "personaSubheading";
   p.className = "muted";
@@ -523,13 +544,10 @@ function showEmptyState(persona) {
 function beginNewChat() {
   closeMobileSidebar();
   state.conversationId = null;
-  const persona = currentPersona() || state.personas[0] || null;
+  const persona = currentPersona() || pickDefaultPersona(state.personas);
   if (persona && state.activePersona !== persona.id) {
     state.activePersona = persona.id;
-    document.querySelectorAll(".persona-item").forEach((b) => {
-      const name = b.querySelector(".persona-name");
-      b.classList.toggle("active", name && name.textContent === persona.id);
-    });
+    markPersonaActive(persona.id);
   }
   updateChatHeader();
   populateModelSelect();
@@ -679,7 +697,7 @@ function renderConversationList(convs) {
     const titleBtn = document.createElement("button");
     titleBtn.className = "conversation-title";
     titleBtn.dataset.id = c.id;
-    titleBtn.innerHTML = `<span>${escapeHtml(c.title || "New chat")}</span><span class="conversation-meta">${escapeHtml(c.persona)} · ${timeAgo(c.updated_at)}</span>`;
+    titleBtn.innerHTML = `<span>${escapeHtml(c.title || "New chat")}</span><span class="conversation-meta">${escapeHtml(personaLabelById(c.persona))} · ${timeAgo(c.updated_at)}</span>`;
 
     const actions = document.createElement("div");
     actions.className = "conversation-actions";
@@ -710,10 +728,7 @@ async function openConversation(id) {
   const persona = state.personas.find((p) => p.id === conv.persona);
   state.modelOverride = modelOverrideFromConversation(conv, persona);
 
-  document.querySelectorAll(".persona-item").forEach((b) => {
-    const name = b.querySelector(".persona-name");
-    b.classList.toggle("active", name && name.textContent === conv.persona);
-  });
+  markPersonaActive(conv.persona);
   updateChatHeader();
   populateModelSelect();
 

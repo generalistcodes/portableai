@@ -1,9 +1,10 @@
-# PortableAI — phone pairing & connection experience (plan, not yet built)
+# PortableAI — phone pairing & connection experience
 
-Collecting the requirements before writing any more code. Nothing here
-changes the current server/app; it's the spec for the next round of work.
+PIN, QR, and LAN IP detection are **built**. This doc is the pairing
+spec plus remaining work. Live pairing on a real phone has **not** been
+confirmed on hardware — that verification is still needed.
 
-## What's already true (built and tested, 124 passing tests)
+## What's already true (built and tested, 167 passing unit tests)
 
 - Server binds to the LAN, not just localhost.
 - A 6-digit PIN (5 min expiry, single-use, brute-force lockout) is the
@@ -36,13 +37,17 @@ most fragile piece here — sequence it after the QR code, not before.
 
 ## 2. What the QR code / pairing info should actually encode
 
-Today the pairing PIN and LAN IP are shown as separate pieces of text.
-For a QR code to be worth building, it should carry everything the app
-needs in one scan — something like a URI:
+**Built.** The desktop Settings QR encodes a plain HTTP URL any phone
+camera opens without an app:
 
 ```
-portableai://pair?ip=192.168.1.134&port=5050&pin=815010&name=gg-G5-KC&exp=1732650000
+http://192.168.1.134:5050/?pair_pin=815010&exp=1732650000
 ```
+
+A `portableai://pair?...` deep link is still generated for a future
+native-app handler (ip, port, pin, name, exp), but scanning that scheme
+today with no app installed is unrecognized text — which is why the live
+QR uses `http://...?pair_pin=` instead.
 
 - `ip` + `port` — exact address, no typing, no guessing which of several
   IPs on the laptop is the right one
@@ -118,16 +123,16 @@ address. Prefers a NetworkManager hotspot's `10.42.x.x` subnet when
 present, since that's almost always the network a phone is meant to
 join.
 
-**Also done:** the pairing URI schema is locked
-(`portableai://pair?ip=...&port=...&pin=...&name=...&exp=...`), and
-`/api/pairing/qr.svg` renders it as an actual scannable QR code — shown
-in Settings next to the PIN, localhost-only like the PIN itself. Uses
-the `qrcode` package's SVG output (no Pillow, no compiled dependency).
+**Also done:** `/api/pairing/qr.svg` renders a scannable QR (HTTP
+`pair_pin` URL, localhost-only like the PIN itself). Uses the `qrcode`
+package's SVG output (no Pillow, no compiled dependency). The
+`portableai://pair?ip=...&port=...&pin=...&name=...&exp=...` schema is
+still returned as `pairing_uri` for a future native handler.
 
-**Still needed:** live verification on real hardware — a fresh server
-start, checking the console warns correctly if no interface is found,
-and an actual phone scanning the real QR code and pairing successfully.
-That can only be tested for real, not simulated.
+**Still needed (not confirmed on hardware):** verify live phone pairing
+— a fresh server start, checking the console warns correctly if no
+interface is found, and an actual phone scanning the real QR code and
+pairing successfully. That can only be tested for real, not simulated.
 
 macOS will need its own interface-enumeration equivalent later (likely
 `ifconfig` or `networksetup` output) — same idea, different command,
@@ -140,8 +145,9 @@ added once that machine is in the picture.
    is found instead of a silent wrong answer.
 2. ~~Finalize the pairing URI schema~~ — **done**, and QR-encoded.
 3. ~~Add QR code generation to Settings~~ — **done**.
-4. **Verify live phone pairing actually works** — the one remaining
-   step that needs real hardware, not more code.
+4. **Verify live phone pairing actually works** — still needed; not
+   confirmed on hardware. The one remaining step that needs a real
+   phone, not more code.
 5. Documented hotspot setup — Ubuntu now, macOS once that machine exists
 6. mDNS/Bonjour auto-discovery (most fragile, do last)
 

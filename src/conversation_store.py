@@ -21,12 +21,18 @@ server.py's _caller_identity()).
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 import time
 import uuid
 from pathlib import Path
 
 LOCAL_OWNER_ID = "local"
+log = logging.getLogger(__name__)
+
+
+class ChatDatabaseError(RuntimeError):
+    """chats.db exists but is not a usable SQLite database."""
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS conversations (
@@ -74,15 +80,44 @@ def _migrate_add_owner_id(conn: sqlite3.Connection) -> None:
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
     """Open a connection and ensure the schema exists. Safe to call
-    repeatedly -- CREATE TABLE IF NOT EXISTS is idempotent."""
-    conn = sqlite3.connect(db_path)
+    repeatedly -- CREATE TABLE IF NOT EXISTS is idempotent.
+
+    Distinguishes a brand-new file from a wiped or malformed one:
+    - missing file → create schema (normal first run)
+    - exists, size 0 → warn (looks truncated), then initialize
+    - exists, malformed / integrity_check fail → ChatDatabaseError
+    """
+    path = Path(db_path)
+    existed = path.exists()
+    size = path.stat().st_size if existed else 0
+
+    if existed and size == 0:
+        log.warning(
+            "chat history database %s exists but is 0 bytes — looks like a "
+            "wiped/truncated database; initializing a new empty schema. "
+            "Prior chat history is gone.",
+            path,
+        )
+
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.executescript(SCHEMA_SQL)
-    conn.commit()
-    _migrate_add_owner_id(conn)
-    conn.execute(_OWNER_INDEX_SQL)
-    conn.commit()
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        if existed and size > 0:
+            check = conn.execute("PRAGMA integrity_check").fetchone()
+            if not check or str(check[0]).lower() != "ok":
+                raise ChatDatabaseError("chat history database appears corrupted")
+        conn.executescript(SCHEMA_SQL)
+        conn.commit()
+        _migrate_add_owner_id(conn)
+        conn.execute(_OWNER_INDEX_SQL)
+        conn.commit()
+    except ChatDatabaseError:
+        conn.close()
+        raise
+    except sqlite3.DatabaseError as e:
+        conn.close()
+        raise ChatDatabaseError("chat history database appears corrupted") from e
     return conn
 
 

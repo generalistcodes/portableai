@@ -97,6 +97,23 @@ def test_chat_raises_on_unexpected_shape(mock_post):
         client.chat("mentor", [{"role": "user", "content": "hi"}])
 
 
+@patch("ollama_client.requests.post")
+def test_chat_raises_on_truncated_json(mock_post):
+    import json as json_lib
+
+    from ollama_client import INCOMPLETE_RESPONSE_MESSAGE
+
+    resp = _mock_response(200, text='{"message": {"content": "hel')
+    resp.json.side_effect = json_lib.JSONDecodeError(
+        "Expecting value", '{"message": {"content": "hel', 12
+    )
+    mock_post.return_value = resp
+    client = OllamaClient()
+    with pytest.raises(OllamaError, match="incomplete or invalid") as exc_info:
+        client.chat("mentor", [{"role": "user", "content": "hi"}])
+    assert str(exc_info.value) == INCOMPLETE_RESPONSE_MESSAGE
+
+
 @patch("ollama_client.requests.delete")
 def test_delete_model_accepts_404_as_success(mock_delete):
     mock_delete.return_value = _mock_response(404)

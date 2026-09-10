@@ -43,7 +43,7 @@ struct ChatView: View {
             Divider()
 
             HStack {
-                TextField("Message \(persona.name)", text: $draft, axis: .vertical)
+                TextField("Message \(persona.displayName)", text: $draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...4)
                 Button {
@@ -56,7 +56,7 @@ struct ChatView: View {
             }
             .padding()
         }
-        .navigationTitle(persona.name)
+        .navigationTitle(persona.displayName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {

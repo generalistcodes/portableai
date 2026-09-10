@@ -7,14 +7,30 @@ ships an official Python library if you want that.
 """
 from __future__ import annotations
 
+import json
+
 import requests
 
 DEFAULT_BASE_URL = "http://localhost:11434"
 DEFAULT_TIMEOUT = 120  # seconds; local inference on CPU can be slow
 
+INCOMPLETE_RESPONSE_MESSAGE = "Ollama returned an incomplete or invalid response."
+
 
 class OllamaError(RuntimeError):
     """Raised when Ollama returns a non-2xx response."""
+
+
+def _response_json(resp: requests.Response):
+    """Parse JSON, wrapping a truncated/malformed body as OllamaError.
+
+    Killing Ollama mid-response often yields a partial body and
+    json.JSONDecodeError (or requests' subclass) instead of ConnectionError.
+    """
+    try:
+        return resp.json()
+    except json.JSONDecodeError as exc:
+        raise OllamaError(INCOMPLETE_RESPONSE_MESSAGE) from exc
 
 
 class OllamaClient:
@@ -38,7 +54,7 @@ class OllamaClient:
         resp = requests.get(self._url("/api/tags"), timeout=self.timeout)
         if resp.status_code != 200:
             raise OllamaError(f"GET /api/tags failed: {resp.status_code} {resp.text}")
-        return resp.json().get("models", [])
+        return _response_json(resp).get("models", [])
 
     def create_model(self, payload: dict) -> None:
         """payload is the structured dict from Persona.to_create_payload()."""
@@ -56,7 +72,7 @@ class OllamaClient:
         resp = requests.post(self._url("/api/chat"), json=body, timeout=self.timeout)
         if resp.status_code != 200:
             raise OllamaError(f"POST /api/chat failed: {resp.status_code} {resp.text}")
-        data = resp.json()
+        data = _response_json(resp)
         try:
             return data["message"]["content"]
         except (KeyError, TypeError) as exc:
@@ -84,7 +100,7 @@ class OllamaClient:
         )
         if resp.status_code != 200:
             raise OllamaError(f"POST /api/pull failed: {resp.status_code} {resp.text}")
-        data = resp.json()
+        data = _response_json(resp)
         status = str(data.get("status", ""))
         if "error" in status.lower():
             raise OllamaError(f"pull failed: {status}")

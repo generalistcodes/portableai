@@ -1,7 +1,8 @@
 # PortableAI iOS app
 
 A minimal SwiftUI client for the PortableAI server: pair once with a PIN,
-pick a persona, chat. This is source files only -- there's no `.xcodeproj`
+then land in a chat with the default Assistant. Other personas stay in the
+list if you want them. This is source files only -- there's no `.xcodeproj`
 here (hand-building one reliably without Xcode itself is error-prone), so
 set it up as a fresh Xcode project and drop these files in.
 
@@ -46,8 +47,9 @@ system will prompt unexpectedly.
    shares the Mac's network stack in confusing ways for LAN testing;
    a real iPhone is the honest test here) via Xcode, enter the server
    address and PIN, pair.
-4. Confirm the persona list loads, and that chatting actually round-trips
-   through Ollama on the laptop.
+4. Confirm the persona list loads with display names (Assistant, Mentor,
+   Explainer, …), a fresh session opens Assistant automatically, and chatting
+   actually round-trips through Ollama on the laptop.
 
 ## Pinning conversations for offline access
 

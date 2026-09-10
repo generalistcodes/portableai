@@ -1,10 +1,24 @@
 import Foundation
 
 struct Persona: Decodable, Identifiable {
-    var id: String { name }
     let name: String
+    let display_name: String?
+    let is_default: Bool?
     let base_model: String?
     let system_preview: String?
+    var id: String { name }
+
+    var displayName: String {
+        let trimmed = display_name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? name : trimmed
+    }
+
+    var isDefault: Bool { is_default ?? false }
+
+    enum CodingKeys: String, CodingKey {
+        case name = "id"
+        case display_name, is_default, base_model, system_preview
+    }
 }
 
 struct ChatResponse: Decodable {

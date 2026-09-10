@@ -215,3 +215,31 @@ def test_migration_adds_owner_id_to_pre_existing_db(tmp_path):
     assert conv is not None
     assert conv["owner_id"] == store.LOCAL_OWNER_ID  # safe default for pre-existing rows
     migrated.close()
+
+
+def test_connect_zero_byte_file_warns_then_initializes(tmp_path, caplog):
+    path = tmp_path / "chats.db"
+    path.write_bytes(b"")
+    with caplog.at_level("WARNING", logger="conversation_store"):
+        conn = store.connect(path)
+    assert any("0 bytes" in r.message for r in caplog.records)
+    store.create_conversation(conn, "no-nonsense-mentor", "llama3.2:3b", LOCAL)
+    conn.close()
+
+
+def test_connect_garbage_header_raises_chat_database_error(tmp_path):
+    path = tmp_path / "chats.db"
+    path.write_bytes(b"this is not a sqlite database at all!!!!")
+    with pytest.raises(store.ChatDatabaseError, match="corrupted"):
+        store.connect(path)
+
+
+def test_connect_truncated_db_raises_chat_database_error(tmp_path):
+    path = tmp_path / "chats.db"
+    conn = store.connect(path)
+    store.create_conversation(conn, "no-nonsense-mentor", "llama3.2:3b", LOCAL)
+    conn.close()
+    raw = path.read_bytes()
+    path.write_bytes(raw[:40])  # keep a sqlite header-ish prefix, drop the rest
+    with pytest.raises(store.ChatDatabaseError, match="corrupted"):
+        store.connect(path)
