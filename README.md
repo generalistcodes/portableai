@@ -1,8 +1,10 @@
-<div align="center">
-  <img src="ui/static/logo.png" width="72" height="72" alt="PortableAI logo">
-  <h1>PortableAI</h1>
-  <p><strong>Your own AI, fully local — chat from your browser or your phone, powered by models you control.</strong></p>
-</div>
+<p align="center">
+  <img src="ui/static/logo.png" width="96" height="96" alt="Portable AI">
+</p>
+
+<h1 align="center">Portable AI</h1>
+
+<p align="center"><strong>Your own AI, fully local — chat from your browser or your phone, powered by models you control.</strong></p>
 
 PortableAI is a self-hosted chat interface for Ollama. New chats start as
 a plain Assistant — like ChatGPT or Claude — and optional named personas
@@ -57,6 +59,11 @@ personas/
   assistant.Modelfile            # default: plain, no-personality Assistant
   no-nonsense-mentor.Modelfile   # terse, opinionated, always ends with a next step
   eli5-explainer.Modelfile       # warm, analogy-heavy, explains like you're 10
+benchmarks/
+  prompts.json                   # the only copy of the model-quality prompt set
+  runner.py                      # collect latency + raw answers from Ollama
+  report.py                      # markdown comparison + critical-refusal flags
+  results/                       # one JSON file per model run
 src/
   persona_loader.py              # parses a Modelfile into a structured Persona
   ollama_client.py               # thin wrapper over Ollama's REST API
@@ -72,6 +79,10 @@ tests/
   test_conversation_store.py     # unit tests for chat history, pure sqlite
   test_server.py                 # unit tests for the UI backend, Ollama mocked
   test_integration_persona.py    # real Ollama + real model, skips if unavailable
+  test_benchmark_*.py            # unit tests for the model benchmark (Ollama mocked)
+docs/
+  MODEL_BENCHMARK.md             # generated from benchmarks/prompts.json
+  BENCHMARK_RESULTS.md           # last real run, with a recommendation
 demo.py                          # CLI: build a persona and chat with it
 data/                            # created at runtime: logs, settings, chats.db, ollama-bin/, ollama-models/
 ```
@@ -104,7 +115,7 @@ Fast unit tests (no Ollama required — this is what CI would run):
 pytest
 ```
 
-This runs 194 tests covering: Modelfile parsing edge cases (missing `FROM`,
+This runs 219 tests covering: Modelfile parsing edge cases (missing `FROM`,
 unterminated triple-quoted `SYSTEM` blocks, malformed `PARAMETER` lines,
 numeric casting), the Ollama client's request/response handling with
 `requests` fully mocked, Linux Ollama vendoring (download URL, version pin,
