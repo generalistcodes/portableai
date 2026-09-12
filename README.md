@@ -91,6 +91,7 @@ tests/
 portableai.spec                  # Linux-only PyInstaller one-file build (Mac/Windows later)
 requirements-dev.txt             # PyInstaller; build-time only, not needed to run from source
 docs/
+  API_CONTRACT.md                # every /api/* route as implemented — iOS/client source of truth
   MODEL_BENCHMARK.md             # generated from benchmarks/prompts.json
   BENCHMARK_RESULTS.md           # last real run, with a recommendation
 demo.py                          # CLI: build a persona and chat with it
