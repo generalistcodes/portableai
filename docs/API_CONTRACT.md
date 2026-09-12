@@ -131,6 +131,31 @@ the sidebar default, and use `icon` for the glyph. Do not assume
 `base_url` is the URL this process is actually using (managed bundled
 Ollama if `run.py` set it, else `settings.json` `base_url`).
 
+### `GET /api/theme`
+
+**Auth:** requires-token (not admin-only — a paired phone may read/write
+this. `/api/settings` stays admin-only.)
+
+**Success (200):**
+
+```json
+{ "theme": "dark" }
+```
+
+`theme` is one of `dark`, `light`, `ube`. Missing `data/theme.json` →
+`"dark"`.
+
+### `POST /api/theme`
+
+**Auth:** requires-token
+
+**Request:** `{"theme": "light"}` — must be exactly `dark`, `light`, or
+`ube`.
+
+**Success (200):** `{"theme": "light"}` (echoes the saved value)
+
+**400** `{"error": "theme must be one of: dark, light, ube"}`
+
 ---
 
 ## Pairing
@@ -633,6 +658,8 @@ Missing log file → `[]`.
 | --- | --- | --- |
 | GET | `/api/health` | LAN-open |
 | GET | `/api/status` | requires-token |
+| GET | `/api/theme` | requires-token |
+| POST | `/api/theme` | requires-token |
 | GET | `/api/personas` | requires-token |
 | GET | `/api/pairing/pin` | admin-only |
 | GET | `/api/pairing/qr.svg` | admin-only |

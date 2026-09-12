@@ -19,6 +19,7 @@ data/*.db
 data/*.jsonl
 data/pairing.json
 data/settings.json
+data/theme.json
 
 # Vendored Ollama (downloaded at runtime on Linux; never commit binaries)
 data/ollama-bin/

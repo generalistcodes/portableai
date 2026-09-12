@@ -457,7 +457,25 @@ function applyTheme(theme) {
 }
 
 applyTheme(readStoredTheme());
-el("themeSelect").addEventListener("change", (e) => applyTheme(e.target.value));
+
+async function syncThemeFromServer() {
+  try {
+    const data = await api("/api/theme");
+    if (data && data.theme) applyTheme(data.theme);
+  } catch (err) {
+    if (err.pairingRequired) return;
+  }
+}
+
+el("themeSelect").addEventListener("change", async (e) => {
+  const next = e.target.value;
+  applyTheme(next);
+  try {
+    await api("/api/theme", { method: "POST", body: JSON.stringify({ theme: next }) });
+  } catch (err) {
+    if (err.pairingRequired) return;
+  }
+});
 
 const SIDEBAR_COLLAPSED_KEY = "portableai.sidebar-collapsed";
 
@@ -1004,6 +1022,17 @@ el("settingsBtn").addEventListener("click", async () => {
     return;
   }
   el("themeSelect").value = readStoredTheme();
+  try {
+    const data = await api("/api/theme");
+    if (data && data.theme) {
+      applyTheme(data.theme);
+      el("themeSelect").value = data.theme;
+    }
+  } catch (err) {
+    if (err.pairingRequired) {
+      // Keep the localStorage theme; still fill the rest of Settings.
+    }
+  }
   el("baseUrlInput").value = settings.base_url;
   el("autoBuildInput").checked = !!settings.auto_build_on_startup;
   el("updateUrlInput").value = settings.update_check_url || "";
@@ -1239,6 +1268,7 @@ async function tryAutoPairFromUrl() {
 
 async function reloadAfterPairing() {
   hidePairingGate();
+  await syncThemeFromServer();
   await loadPersonas();
   await loadModels();
   await loadConversations();
@@ -1311,6 +1341,7 @@ async function init() {
   loadModels();
   loadConversations();
   refreshStatus();
+  syncThemeFromServer();
   maybeAutoCheckUpdatesOnStartup();
   setInterval(refreshStatus, 15000);
 }

@@ -20,3 +20,6 @@ from your browser or iPhone, and keep everything on your own machine.
 A self-hosted chat interface for Ollama — build named AI personas, chat
 from a dark-mode web UI or a companion iPhone app, save and search your
 history, and manage models. Nothing leaves your network.
+
+## Confirmed visual tokens
+Dark theme background `#141218` confirmed intentional 2026-09-12, alongside the purple logo rebrand.

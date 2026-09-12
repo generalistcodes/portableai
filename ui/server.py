@@ -58,6 +58,7 @@ PERSONAS_DIR = ROOT / "personas"
 DATA_DIR = data_dir()
 LOG_FILE = DATA_DIR / "logs.jsonl"
 SETTINGS_FILE = DATA_DIR / "settings.json"
+THEME_FILE = DATA_DIR / "theme.json"
 DB_FILE = DATA_DIR / "chats.db"
 PAIRING_FILE = DATA_DIR / "pairing.json"
 STATIC_DIR = ROOT / "ui" / "static"
@@ -69,6 +70,9 @@ DEFAULT_SETTINGS = {
     "update_check_url": "",       # empty = feature disabled, no network calls made
     "auto_check_updates": False,  # opt-in; manual "Check now" always works regardless
 }
+
+ALLOWED_THEMES = ("dark", "light", "ube")
+DEFAULT_THEME = "dark"
 
 # Bump these when you change this repo / the curated catalog, and reflect
 # the same values in whatever JSON you publish at your update_check_url.
@@ -119,6 +123,10 @@ def set_managed_ollama_base_url(url: str | None) -> None:
 # not trigger). /api/models/check-update actually re-pulls. If catalog
 # were a static file with no installed flags and no secrets, LAN-with-
 # token would be acceptable; that is not the current shape.
+#
+# /api/theme is deliberately NOT admin-only: appearance has no security
+# implications (unlike base_url, logs, or model pull). Paired devices
+# share one server-side theme via requires-token, same as /api/personas.
 _ADMIN_ONLY_PATHS_PREFIX = "/api/pairing/devices"
 _ADMIN_ONLY_PATHS = {
     "/api/pairing/pin",
@@ -415,6 +423,25 @@ def _load_settings() -> dict:
 def _save_settings(settings: dict) -> None:
     DATA_DIR.mkdir(exist_ok=True)
     SETTINGS_FILE.write_text(json.dumps(settings, indent=2))
+
+
+def _load_theme() -> str:
+    """Shared UI theme. Missing or unreadable file → dark. Never raises."""
+    if not THEME_FILE.exists():
+        return DEFAULT_THEME
+    try:
+        data = json.loads(THEME_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return DEFAULT_THEME
+    theme = data.get("theme") if isinstance(data, dict) else None
+    if theme in ALLOWED_THEMES:
+        return theme
+    return DEFAULT_THEME
+
+
+def _save_theme(theme: str) -> None:
+    DATA_DIR.mkdir(exist_ok=True)
+    THEME_FILE.write_text(json.dumps({"theme": theme}, indent=2) + "\n")
 
 
 def _client() -> OllamaClient:
@@ -741,6 +768,21 @@ def api_updates_check():
             "notes_url": remote.get("notes_url"),
         }
     )
+
+
+@app.route("/api/theme", methods=["GET"])
+def get_theme():
+    return jsonify({"theme": _load_theme()})
+
+
+@app.route("/api/theme", methods=["POST"])
+def post_theme():
+    body = request.get_json(force=True) or {}
+    theme = body.get("theme")
+    if theme not in ALLOWED_THEMES:
+        return jsonify({"error": "theme must be one of: dark, light, ube"}), 400
+    _save_theme(theme)
+    return jsonify({"theme": theme})
 
 
 @app.route("/api/settings", methods=["GET"])

@@ -20,12 +20,7 @@ follow `docs/API_CONTRACT.md` for the live `/api/*` surface.
 
 This started as a tutorial on GGUF/Ollama and model personas — see
 **Example prompts to try** further down if you're here for that. The
-project lives at **portableai.app**. Note there's an existing, unrelated
-open-source project called
-[Portable-AI-USB](https://github.com/techjarves/Portable-AI-USB) (2k+
-stars) doing something similar (Ollama + offline USB drive) — worth a
-glance before finalizing public-facing copy, purely to keep positioning
-distinct from theirs, not because "portable AI" is anyone's trademark.
+project lives at **portableai.app**.
 
 A persona in Ollama is just a base GGUF model plus a fixed system prompt
 and a few parameters, packaged into a named model. This repo shows how to

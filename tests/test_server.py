@@ -25,6 +25,7 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(server_module, "DATA_DIR", tmp_path)
     monkeypatch.setattr(server_module, "LOG_FILE", tmp_path / "logs.jsonl")
     monkeypatch.setattr(server_module, "SETTINGS_FILE", tmp_path / "settings.json")
+    monkeypatch.setattr(server_module, "THEME_FILE", tmp_path / "theme.json")
     monkeypatch.setattr(server_module, "DB_FILE", tmp_path / "chats.db")
     monkeypatch.setattr(server_module, "PAIRING_FILE", tmp_path / "pairing.json")
     server_module._built_personas.clear()
@@ -62,6 +63,64 @@ def test_style_defines_named_themes(client):
     assert b'[data-theme="light"]' in css
     assert b'[data-theme="ube"]' in css
     assert b"--bg-main: #141218" in css
+
+
+def test_theme_defaults_to_dark_on_fresh_install(client, app):
+    assert not app.THEME_FILE.exists()
+    resp = client.get("/api/theme")
+    assert resp.status_code == 200
+    assert resp.get_json() == {"theme": "dark"}
+
+
+def test_theme_invalid_value_is_rejected(client):
+    resp = client.post(
+        "/api/theme",
+        data=json.dumps({"theme": "solarized"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+    assert resp.get_json()["error"] == "theme must be one of: dark, light, ube"
+    assert client.get("/api/theme").get_json() == {"theme": "dark"}
+
+
+def test_theme_persists_across_requests(client, app):
+    posted = client.post(
+        "/api/theme",
+        data=json.dumps({"theme": "ube"}),
+        content_type="application/json",
+    )
+    assert posted.status_code == 200
+    assert posted.get_json() == {"theme": "ube"}
+    assert json.loads(app.THEME_FILE.read_text()) == {"theme": "ube"}
+    assert client.get("/api/theme").get_json() == {"theme": "ube"}
+
+
+def test_lan_device_with_token_can_read_and_write_theme(client, app):
+    """Theme is requires-token, not admin-only — unlike /api/settings."""
+    env, headers = _lan_auth_headers(client, app)
+    got = client.get("/api/theme", environ_overrides=env, headers=headers)
+    assert got.status_code == 200
+    assert got.get_json() == {"theme": "dark"}
+
+    posted = client.post(
+        "/api/theme",
+        data=json.dumps({"theme": "light"}),
+        content_type="application/json",
+        environ_overrides=env,
+        headers=headers,
+    )
+    assert posted.status_code == 200
+    assert posted.get_json() == {"theme": "light"}
+    assert client.get("/api/theme").get_json() == {"theme": "light"}
+
+    settings = client.get("/api/settings", environ_overrides=env, headers=headers)
+    assert settings.status_code == 403
+
+
+def test_lan_theme_without_token_is_rejected(client):
+    resp = client.get("/api/theme", environ_overrides=LAN_ENV)
+    assert resp.status_code == 401
+    assert resp.get_json()["error"] == "pairing required"
 
 
 def test_logo_svg_is_served(client):
