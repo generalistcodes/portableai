@@ -608,6 +608,77 @@ function beginNewChat() {
 
 // ---------- Chat ----------
 
+const COPY_ICON = "⧉";
+const COPIED_ICON = "✓";
+
+function fallbackCopyText(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  // Keep the field in-viewport (opacity 0). Off-screen -9999px makes
+  // execCommand("copy") fail on some mobile browsers.
+  ta.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;pointer-events:none;";
+  document.body.appendChild(ta);
+  const selection = document.getSelection();
+  const saved = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+  ta.focus();
+  ta.select();
+  ta.setSelectionRange(0, ta.value.length);
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } finally {
+    ta.remove();
+    if (saved && selection) {
+      selection.removeAllRanges();
+      selection.addRange(saved);
+    }
+  }
+  if (!ok) throw new Error("copy failed");
+}
+
+async function copyTextToClipboard(text) {
+  // navigator.clipboard needs a secure context (HTTPS or localhost).
+  // Phones on the LAN hit plain HTTP, so this API is missing there.
+  if (typeof navigator.clipboard !== "undefined" && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Some browsers expose the API on HTTP then reject; fall through.
+    }
+  }
+  fallbackCopyText(text);
+}
+
+function addCopyButton(bubble, rawText) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "icon-btn bubble-copy";
+  btn.title = "Copy";
+  btn.setAttribute("aria-label", "Copy");
+  btn.dataset.raw = rawText;
+  btn.textContent = COPY_ICON;
+  btn.addEventListener("click", async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      await copyTextToClipboard(btn.dataset.raw || "");
+      btn.textContent = COPIED_ICON;
+      btn.title = "Copied";
+      btn.setAttribute("aria-label", "Copied");
+      setTimeout(() => {
+        btn.textContent = COPY_ICON;
+        btn.title = "Copy";
+        btn.setAttribute("aria-label", "Copy");
+      }, 1500);
+    } catch {
+      btn.title = "Copy failed";
+    }
+  });
+  bubble.appendChild(btn);
+}
+
 function appendMessage(role, content, meta = "") {
   const messages = el("messages");
   const emptyState = messages.querySelector(".empty-state");
@@ -633,6 +704,10 @@ function appendMessage(role, content, meta = "") {
     metaEl.className = "meta";
     metaEl.textContent = meta;
     bubble.appendChild(metaEl);
+  }
+
+  if (role === "assistant" && content) {
+    addCopyButton(bubble, content);
   }
 
   row.appendChild(bubble);

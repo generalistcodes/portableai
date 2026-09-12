@@ -108,6 +108,21 @@ def test_api_personas_lists_bundled_personas(client):
     assert defaults[0]["id"] == "assistant"
 
 
+def test_assistant_copy_button_is_hover_only_with_clipboard_fallback(client):
+    js = client.get("/app.js").data.decode()
+    assert "bubble-copy" in js
+    assert "copyTextToClipboard" in js
+    assert 'typeof navigator.clipboard !== "undefined"' in js
+    assert 'document.execCommand("copy")' in js
+    assert "dataset.raw" in js
+    css = client.get("/style.css").data.decode()
+    assert ".bubble-copy" in css
+    assert "opacity: 0" in css
+    assert ".bubble:hover .bubble-copy" in css
+    html = client.get("/").data.decode()
+    assert "copy-reply-1" in html
+
+
 def test_persona_list_ui_hides_model_and_renders_icons(client):
     js = client.get("/app.js").data.decode()
     assert "persona-model" not in js
