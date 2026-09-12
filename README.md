@@ -120,8 +120,9 @@ unterminated triple-quoted `SYSTEM` blocks, malformed `PARAMETER` lines,
 numeric casting), the Ollama client's request/response handling with
 `requests` fully mocked, Linux Ollama vendoring (download URL, version pin,
 child `OLLAMA_MODELS`) with download/subprocess mocked, the Flask UI backend
-(pairing, auth, chat history, logs, catalog), and SQLite conversation
-storage — no network, no GPU, no waiting on inference.
+(pairing, auth, chat history, logs, catalog), SQLite conversation
+storage, and the model-quality benchmark (prompt catalog, mocked collector,
+refusal heuristic) — no network, no GPU, no waiting on inference.
 
 Integration tests (spins up the real personas against a real, running
 Ollama):

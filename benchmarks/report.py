@@ -16,7 +16,7 @@ from benchmarks.prompts import write_prompt_catalog
 from benchmarks.runner import RESULTS_DIR
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-RESULTS_DOC_PATH = REPO_ROOT / "docs" / "BENCHMARK_RESULTS.md"
+RESULTS_DOC_PATH = RESULTS_DIR / "comparison.md"
 
 # Simple phrase check — flag for review, do not score quality.
 REFUSAL_MARKERS = (

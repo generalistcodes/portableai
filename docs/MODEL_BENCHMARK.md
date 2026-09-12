@@ -14,11 +14,16 @@ Run a collection (one JSON file per model, under `benchmarks/results/`):
 python -m benchmarks.runner llama3.2:3b qwen2.5:3b qwen2.5:0.5b
 ```
 
-Turn those files into a comparison report:
+Turn those files into a mechanical comparison of the latest JSON:
 
 ```bash
-python -m benchmarks.report --write docs/BENCHMARK_RESULTS.md
+python -m benchmarks.report --write benchmarks/results/comparison.md
 ```
+
+A human reading of a real run (pass/fail on critical checks, and which
+model PortableAI should default to) is `docs/BENCHMARK_RESULTS.md`.
+That file is written after reading the answers — do not overwrite it
+from the JSON dump.
 
 `critical: true` items are refusal checks. A refusal-shaped answer there
 is flagged prominently in the report for human review — the heuristic is
