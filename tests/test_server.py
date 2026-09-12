@@ -392,13 +392,16 @@ def test_api_models_formats_size_and_reports_path(mock_cls, client, app):
     assert data["models"][0]["quantization"] == "Q4_K_M"
     hint = data["models_path_hint"]
     assert hint
-    if sys.platform.startswith("linux"):
+    if sys.platform.startswith("linux") or sys.platform == "darwin":
         assert hint == str((app.DATA_DIR / "ollama-models").resolve())
         assert " or " not in hint
 
 
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="bundled models path is Linux-only")
-def test_models_path_hint_is_portableai_data_dir_on_linux(app):
+@pytest.mark.skipif(
+    not (sys.platform.startswith("linux") or sys.platform == "darwin"),
+    reason="bundled models path is Linux/macOS only",
+)
+def test_models_path_hint_is_portableai_data_dir_when_bundled(app):
     hint = app._models_path_hint()
     assert hint == str((app.DATA_DIR / "ollama-models").resolve())
     assert " or " not in hint
@@ -1050,14 +1053,14 @@ def test_export_conversation_respects_ownership(client, app):
 @patch("server.subprocess.run")
 def test_enumerate_lan_ips_parses_hostname_dash_i(mock_run, app):
     mock_run.return_value = MagicMock(returncode=0, stdout="192.168.1.134 172.17.0.1\n")
-    ips = app._enumerate_lan_ips()
+    ips = app._enumerate_lan_ips_linux()
     assert ips == ["192.168.1.134", "172.17.0.1"]
 
 
 @patch("server.subprocess.run")
 def test_enumerate_lan_ips_filters_loopback(mock_run, app):
     mock_run.return_value = MagicMock(returncode=0, stdout="127.0.0.1 192.168.1.134\n")
-    ips = app._enumerate_lan_ips()
+    ips = app._enumerate_lan_ips_linux()
     assert "127.0.0.1" not in ips
     assert "192.168.1.134" in ips
 
@@ -1071,20 +1074,65 @@ def test_enumerate_lan_ips_falls_back_to_ip_command(mock_run, app):
             return MagicMock(
                 returncode=0,
                 stdout=json.dumps(
-                    [{"addr_info": [{"local": "10.42.0.1"}, {"local": "127.0.0.1"}]}]
+                    [{"ifname": "wlan0", "addr_info": [{"local": "10.42.0.1"}, {"local": "127.0.0.1"}]}]
                 ),
             )
         raise FileNotFoundError
 
     mock_run.side_effect = side_effect
-    ips = app._enumerate_lan_ips()
+    ips = app._enumerate_lan_ips_linux()
     assert ips == ["10.42.0.1"]
 
 
 @patch("server.subprocess.run")
 def test_enumerate_lan_ips_empty_when_both_commands_fail(mock_run, app):
     mock_run.side_effect = FileNotFoundError
-    assert app._enumerate_lan_ips() == []
+    assert app._enumerate_lan_ips_linux() == []
+
+
+@patch("server.subprocess.run")
+def test_enumerate_lan_ips_darwin_uses_ifconfig_and_ipconfig(mock_run, app):
+    def side_effect(cmd, **kwargs):
+        if cmd == ["ifconfig", "-l"]:
+            return MagicMock(returncode=0, stdout="lo0 en0 awdl0 utun0\n")
+        if cmd == ["ipconfig", "getifaddr", "en0"]:
+            return MagicMock(returncode=0, stdout="192.168.1.129\n")
+        if cmd[:2] == ["ipconfig", "getifaddr"]:
+            return MagicMock(returncode=1, stdout="")
+        raise AssertionError(f"unexpected cmd {cmd}")
+
+    mock_run.side_effect = side_effect
+    ips = app._enumerate_lan_ips_darwin()
+    assert ips == ["192.168.1.129"]
+    # lo0 / awdl0 / utun0 must never be queried
+    queried = [c.args[0] for c in mock_run.call_args_list if c.args[0][:2] == ["ipconfig", "getifaddr"]]
+    assert queried == [["ipconfig", "getifaddr", "en0"]]
+
+
+@patch("server.subprocess.run")
+def test_enumerate_lan_ips_darwin_empty_when_no_active_iface(mock_run, app):
+    def side_effect(cmd, **kwargs):
+        if cmd == ["ifconfig", "-l"]:
+            return MagicMock(returncode=0, stdout="lo0 awdl0 utun0\n")
+        return MagicMock(returncode=1, stdout="")
+
+    mock_run.side_effect = side_effect
+    assert app._enumerate_lan_ips_darwin() == []
+
+
+@patch("server.subprocess.run")
+def test_enumerate_lan_ips_darwin_skips_link_local(mock_run, app):
+    def side_effect(cmd, **kwargs):
+        if cmd == ["ifconfig", "-l"]:
+            return MagicMock(returncode=0, stdout="en0 en1\n")
+        if cmd == ["ipconfig", "getifaddr", "en0"]:
+            return MagicMock(returncode=0, stdout="169.254.12.34\n")
+        if cmd == ["ipconfig", "getifaddr", "en1"]:
+            return MagicMock(returncode=0, stdout="10.0.0.5\n")
+        raise AssertionError(cmd)
+
+    mock_run.side_effect = side_effect
+    assert app._enumerate_lan_ips_darwin() == ["10.0.0.5"]
 
 
 @patch("server._enumerate_lan_ips")

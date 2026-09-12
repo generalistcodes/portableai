@@ -2,7 +2,7 @@
 Cross-platform launcher for the persona chat UI.
 
 This is the only supported way to start PortableAI. `python ui/server.py`
-refuses to start: that would skip the bundled Ollama on Linux. This
+refuses to start: that would skip the bundled Ollama on Linux/macOS. This
 launcher checks for Flask/requests and installs them via pip if missing,
 then starts the server. Works identically on Windows, macOS, and Linux:
 no shell scripts, no OS-specific activation commands:
@@ -13,10 +13,10 @@ no shell scripts, no OS-specific activation commands:
 
 (`python3 run.py` on systems where "python" still means Python 2.)
 
-On Linux this also vendors a pinned standalone Ollama into data/ollama-bin/
-(downloaded on first run) and launches `ollama serve` as a subprocess with
-models stored in data/ollama-models/. macOS and Windows still need a
-separate Ollama install (see https://ollama.com/download).
+On Linux and macOS this also vendors a pinned standalone Ollama into
+data/ollama-bin/ (downloaded on first run) and launches `ollama serve`
+as a subprocess with models stored in data/ollama-models/. Windows still
+needs a separate Ollama install (see https://ollama.com/download).
 """
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Start, restart, or stop the PortableAI chat UI on port 5050. "
         "Only a leftover instance of this app (python run.py / ui/server.py) is ever stopped; "
-        "other programs on that port are left alone. On Linux, also starts a bundled Ollama."
+        "other programs on that port are left alone. On Linux/macOS, also starts a bundled Ollama."
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
@@ -79,7 +79,7 @@ def main() -> None:
     parser.add_argument(
         "--ollama-host",
         default="127.0.0.1:11434",
-        help="Host:port for bundled Ollama on Linux (default 127.0.0.1:11434).",
+        help="Host:port for bundled Ollama on Linux/macOS (default 127.0.0.1:11434).",
     )
     args = parser.parse_args()
 
@@ -149,7 +149,7 @@ def main() -> None:
             server.set_managed_ollama_base_url(runtime.base_url)
         else:
             print(
-                "Note: PortableAI does not bundle Ollama on this OS yet (Linux only). "
+                "Note: PortableAI does not bundle Ollama on this OS yet (Linux/macOS only). "
                 "Install Ollama separately: https://ollama.com/download"
             )
         server.run_app(args.port)

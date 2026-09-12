@@ -36,18 +36,17 @@ next to the binary.
 
 **From source (any OS):**
 - Python 3.10+
-- **Linux:** nothing else. `python run.py` downloads a pinned standalone
-  Ollama into `data/ollama-bin/` on first run, starts it for you, and
-  stores models in `data/ollama-models/`. First run needs internet for
-  that download (~1.4GB on amd64 — the official archive includes CUDA
-  libs even though PortableAI does not wire GPU; you'll see a progress
-  message). After that it's local.
-- **macOS / Windows:** Ollama is not bundled yet — install it from
+- **Linux / macOS:** nothing else for Ollama. `python run.py` downloads a
+  pinned standalone Ollama into `data/ollama-bin/` on first run, starts it
+  for you, and stores models in `data/ollama-models/`. First run needs
+  internet for that download (~1.4GB on Linux amd64; ~190MB on macOS).
+  After that it's local.
+- **Windows:** Ollama is not bundled yet — install it from
   [ollama.com](https://ollama.com) and have `ollama serve` running.
 - A base model once the server is up — download one from Settings, or
-  (Linux) `data/ollama-bin/ollama pull llama3.2:3b` against the bundled
-  instance. A system `ollama` CLI talks to the system install, not
-  PortableAI's copy.
+  (Linux/macOS) use the bundled `data/ollama-bin/ollama pull …` against
+  PortableAI's copy. A system `ollama` CLI talks to the system install,
+  not PortableAI's copy.
 
 ```bash
 pip install -r requirements.txt
@@ -227,10 +226,11 @@ Then open **http://localhost:5050**. Other programs on port 5050 are never kille
   persona holds up on a smaller/larger base model.
 - **Installed models + storage path** (in Settings) — lists every pulled
   model with its parameter size, quantization, and disk size, plus the
-  storage path. On Linux this is PortableAI's own `data/ollama-models/`
-  (the bundled Ollama is launched with `OLLAMA_MODELS` set there). On
-  macOS/Windows it is still a best-effort guess (`$OLLAMA_MODELS` or the
-  documented per-OS default) until those platforms are bundled too.
+  storage path. On Linux and macOS this is PortableAI's own
+  `data/ollama-models/` (the bundled Ollama is launched with
+  `OLLAMA_MODELS` set there). On Windows it is still a best-effort guess
+  (`$OLLAMA_MODELS` or the documented default) until Windows is bundled
+  too.
 
 Assistant replies are rendered as markdown (headers, code blocks, lists,
 bold/italic, links) using a small hand-rolled renderer in `app.js` rather
@@ -287,13 +287,13 @@ what carries over cleanly and what doesn't:
 - `personas/*.Modelfile` — plain text, no OS-specific content
 - `data/chats.db` — SQLite's file format is identical across Windows/macOS/Linux; copy it to a new machine's `data/` folder and your chat history is back
 - `data/settings.json`, `data/logs.jsonl` — plain JSON/JSON-lines
-- `data/ollama-bin/` and `data/ollama-models/` — on Linux, the vendored Ollama binary and the models it pulled. Copy the whole folder to another **Linux machine of the same architecture** and you do not need a separate Ollama install. A first run on a machine that is missing `data/ollama-bin/ollama` will download the pinned binary again.
+- `data/ollama-bin/` and `data/ollama-models/` — on **Linux and macOS**, the vendored Ollama install and the models it pulled. Copy the whole folder to another machine of the **same OS family** (and same CPU arch on Linux) and you do not need a separate Ollama install. A first run that is missing the pinned binary will download it again.
 - All the Python source — no hardcoded path separators anywhere (everything uses `pathlib.Path`, which normalizes for the current OS automatically), no hardcoded absolute paths, no OS-specific assumptions
 
 **Does NOT carry over — needs a fresh setup per machine:**
 - `venv/` (or any virtualenv folder) — a Python virtual environment is tied to the exact OS and Python build it was created with; copying one from Linux and running it on Windows will not work. Don't zip/copy this folder.
-- **Ollama on macOS and Windows** — not bundled yet. Separate install per OS, from [ollama.com/download](https://ollama.com/download). Those platforms still talk to Ollama over HTTP the old way.
-- GPU / CUDA / ROCm — the Linux vendored binary is **CPU-only for now**. PortableAI does not run the official installer's GPU detection, and it does not download CUDA or ROCm extras. If you have a GPU and care about it, install Ollama yourself from ollama.com (which *does* wire up GPU support) rather than assuming this bundled copy will use it. That is a deliberate trade-off for "one folder, one command", not a silent performance regression we hope you won't notice.
+- **Ollama on Windows** — not bundled yet. Separate install from [ollama.com/download](https://ollama.com/download). Windows still talks to Ollama over HTTP the old way.
+- GPU / CUDA / ROCm — the Linux vendored binary is **CPU-only for now**. PortableAI does not run the official installer's GPU detection, and it does not download CUDA or ROCm extras. If you have a GPU and care about it, install Ollama yourself from ollama.com (which *does* wire up GPU support) rather than assuming this bundled copy will use it. That is a deliberate trade-off for "one folder, one command", not a silent performance regression we hope you won't notice. On macOS the vendored app can use Apple Silicon / Metal when the machine supports it; this was not the focus of the bundling work.
 - `dist/portableai` — the compiled Linux executable will not run on macOS or Windows. Those builds are planned, not shipped.
 
 **Easiest way to run it on a new machine:**
@@ -302,8 +302,9 @@ what carries over cleanly and what doesn't:
 python run.py
 ```
 
-`run.py` works the same way on Windows, macOS, and Linux for the Python side — it checks whether Flask/requests are installed, installs them via pip if not (needs internet for that one-time step), then starts the server on `http://localhost:5050`. On **Linux** it also downloads a pinned Ollama `v0.34.0` standalone archive from GitHub into `data/ollama-bin/` the first time, launches `ollama serve` as a subprocess with `OLLAMA_MODELS` pointed at `data/ollama-models/`, and stops that subprocess when you Ctrl+C. If a system-wide `ollama` is already on PATH, it prints a clear notice that PortableAI is using the bundled copy instead — it does not silently reuse the system install.
+`run.py` works the same way on Windows, macOS, and Linux for the Python side — it checks whether Flask/requests are installed, installs them via pip if not (needs internet for that one-time step), then starts the server on `http://localhost:5050`. On **Linux and macOS** it also downloads a pinned Ollama `v0.34.0` into `data/ollama-bin/` the first time, launches `ollama serve` as a subprocess with `OLLAMA_MODELS` pointed at `data/ollama-models/`, and stops that subprocess when you Ctrl+C. If a system-wide `ollama` is already on PATH, it prints a clear notice that PortableAI is using the bundled copy instead — it does not silently reuse the system install.
 
+**macOS bundling (tested on a real Mac, 2026-09-12):** downloads the pinned GitHub asset `Ollama-darwin.zip` (~190MB), extracts `Ollama.app`, runs the CLI at `Ollama.app/Contents/Resources/ollama`, and clears `com.apple.quarantine` with `xattr` before the first launch. In that live test **no Gatekeeper dialog appeared** — download → extract → quarantine strip → `ollama serve` completed with zero manual clicks. Second start correctly skipped the download via the `VERSION` pin. Chat round-trip against a local model returned a real reply (`PONG`). Model *pulls* from the Ollama registry are a separate network path (CDN timeouts can still fail on a flaky connection); that is not a Gatekeeper issue.
 Use `python run.py --restart` to stop ours then start, or `python run.py --stop` to stop without starting. No shell scripts, no `venv\Scripts\activate` vs `source venv/bin/activate` differences to remember.
 
 If you'd rather manage a virtualenv yourself: `python -m venv venv` on

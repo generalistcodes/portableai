@@ -244,15 +244,64 @@ def _skip_iface(name: str) -> bool:
     )
 
 
-def _enumerate_lan_ips() -> list[str]:
-    """Every non-loopback IPv4 address currently assigned to this
-    machine, across all interfaces. Deliberately does NOT rely on
-    routing-table tricks (connect-to-8.8.8.8 and see what source IP
-    comes back) -- that approach silently returns 127.0.0.1 on a
-    machine with no default route at all, which is exactly what an
-    isolated WiFi hotspot with no internet uplink looks like. Real
-    interface enumeration works regardless of whether there's a route
-    to the outside world."""
+def _skip_darwin_iface(name: str) -> bool:
+    """macOS virtual / point-to-point interfaces a phone cannot reach."""
+    n = (name or "").lower()
+    if n == "lo0" or n.startswith("lo"):
+        return True
+    return any(
+        n.startswith(p)
+        for p in (
+            "awdl",
+            "llw",
+            "utun",
+            "gif",
+            "stf",
+            "anpi",
+            "bridge",
+            "ap",
+            "vmnet",
+            "veth",
+            "docker",
+        )
+    )
+
+
+def _enumerate_lan_ips_darwin() -> list[str]:
+    """macOS: list interfaces with `ifconfig -l`, then resolve each with
+    `ipconfig getifaddr <iface>` (both ship with macOS)."""
+    ips: list[str] = []
+    try:
+        listed = subprocess.run(
+            ["ifconfig", "-l"], capture_output=True, text=True, timeout=2
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return []
+    if listed.returncode != 0:
+        return []
+
+    for iface in listed.stdout.split():
+        if _skip_darwin_iface(iface):
+            continue
+        try:
+            result = subprocess.run(
+                ["ipconfig", "getifaddr", iface],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+        except (FileNotFoundError, subprocess.SubprocessError):
+            continue
+        if result.returncode != 0:
+            continue
+        ip = (result.stdout or "").strip()
+        if ip and _usable_lan_ip(ip):
+            ips.append(ip)
+    return ips
+
+
+def _enumerate_lan_ips_linux() -> list[str]:
+    """Linux path (unchanged): `ip -4 -json` then `hostname -I`."""
     ips: list[str] = []
 
     # Primary: `ip -4 -json` includes interface names, so we can skip
@@ -286,6 +335,20 @@ def _enumerate_lan_ips() -> list[str]:
         pass
 
     return ips
+
+
+def _enumerate_lan_ips() -> list[str]:
+    """Every non-loopback IPv4 address currently assigned to this
+    machine, across all interfaces. Deliberately does NOT rely on
+    routing-table tricks (connect-to-8.8.8.8 and see what source IP
+    comes back) -- that approach silently returns 127.0.0.1 on a
+    machine with no default route at all, which is exactly what an
+    isolated WiFi hotspot with no internet uplink looks like. Real
+    interface enumeration works regardless of whether there's a route
+    to the outside world."""
+    if sys.platform == "darwin":
+        return _enumerate_lan_ips_darwin()
+    return _enumerate_lan_ips_linux()
 
 
 def _pick_lan_ip(candidates: list[str]) -> str | None:
@@ -524,17 +587,16 @@ def _human_size(num_bytes) -> str | None:
 def _models_path_hint() -> str:
     """Where this PortableAI instance stores GGUF blobs.
 
-    On Linux, run.py launches a bundled Ollama with OLLAMA_MODELS pointed
-    at data/ollama-models/, so the path is known and controlled. Other
-    OSes still guess from $OLLAMA_MODELS or the documented default.
+    On Linux and macOS, run.py launches a bundled Ollama with
+    OLLAMA_MODELS pointed at data/ollama-models/, so the path is known
+    and controlled. Windows still guesses from $OLLAMA_MODELS or the
+    documented default.
     """
-    if sys.platform.startswith("linux"):
+    if sys.platform.startswith("linux") or sys.platform == "darwin":
         return str(models_dir(DATA_DIR).resolve())
     env = os.environ.get("OLLAMA_MODELS")
     if env:
         return env
-    if sys.platform == "darwin":
-        return "~/.ollama/models"
     if sys.platform.startswith("win"):
         return r"%USERPROFILE%\.ollama\models"
     return "~/.ollama/models"

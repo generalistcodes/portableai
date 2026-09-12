@@ -8,15 +8,18 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from ollama_runtime import (  # noqa: E402
+    DARWIN_ARCHIVE,
     DEFAULT_HOST,
     PINNED_VERSION,
     OllamaHandle,
     OllamaRuntimeError,
     archive_name,
+    clear_macos_quarantine,
     download_start_message,
     download_url,
     ensure_binary,
     start_serve,
+    supported_on_this_os,
     warn_if_system_ollama,
     wait_until_ready,
 )
@@ -28,23 +31,48 @@ def _fake_extract(archive: Path, dest_dir: Path) -> None:
     (dest_dir / "ollama").chmod(0o755)
 
 
+def _fake_extract_darwin(archive: Path, dest_dir: Path) -> None:
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    cli = dest_dir / "Ollama.app" / "Contents" / "Resources" / "ollama"
+    cli.parent.mkdir(parents=True, exist_ok=True)
+    cli.write_bytes(b"fake-darwin-ollama")
+    cli.chmod(0o755)
+    target = dest_dir / "ollama"
+    if target.exists() or target.is_symlink():
+        target.unlink()
+    target.symlink_to(Path("Ollama.app") / "Contents" / "Resources" / "ollama")
+
+
 def test_download_url_is_arch_specific():
-    assert download_url("x86_64") == (
+    assert download_url("x86_64", "linux") == (
         f"https://github.com/ollama/ollama/releases/download/{PINNED_VERSION}/"
         "ollama-linux-amd64.tar.zst"
     )
-    assert download_url("amd64") == download_url("x86_64")
-    assert download_url("aarch64") == (
+    assert download_url("amd64", "linux") == download_url("x86_64", "linux")
+    assert download_url("aarch64", "linux") == (
         f"https://github.com/ollama/ollama/releases/download/{PINNED_VERSION}/"
         "ollama-linux-arm64.tar.zst"
     )
-    assert download_url("arm64") == download_url("aarch64")
-    assert archive_name("x86_64") == "ollama-linux-amd64.tar.zst"
+    assert download_url("arm64", "linux") == download_url("aarch64", "linux")
+    assert archive_name("x86_64", "linux") == "ollama-linux-amd64.tar.zst"
+
+
+def test_download_url_darwin_uses_pinned_zip():
+    assert archive_name(platform_name="darwin") == DARWIN_ARCHIVE
+    assert download_url(platform_name="darwin") == (
+        f"https://github.com/ollama/ollama/releases/download/{PINNED_VERSION}/{DARWIN_ARCHIVE}"
+    )
+
+
+def test_supported_on_linux_and_darwin_only():
+    assert supported_on_this_os("linux") is True
+    assert supported_on_this_os("darwin") is True
+    assert supported_on_this_os("win32") is False
 
 
 def test_unsupported_architecture_raises():
-    with pytest.raises(OllamaRuntimeError, match="amd64 and arm64"):
-        download_url("ppc64le")
+    with pytest.raises(OllamaRuntimeError, match="linux amd64/arm64 and macOS"):
+        download_url("ppc64le", "linux")
 
 
 @pytest.mark.parametrize(
@@ -61,7 +89,13 @@ def test_missing_binary_downloads_arch_specific_url(tmp_path, machine, expected_
         fetched.append(url)
         dest.write_bytes(b"archive")
 
-    path = ensure_binary(tmp_path, machine=machine, fetch=fake_fetch, extract=_fake_extract)
+    path = ensure_binary(
+        tmp_path,
+        machine=machine,
+        platform_name="linux",
+        fetch=fake_fetch,
+        extract=_fake_extract,
+    )
 
     assert fetched == [
         f"https://github.com/ollama/ollama/releases/download/{PINNED_VERSION}/{expected_archive}"
@@ -69,6 +103,48 @@ def test_missing_binary_downloads_arch_specific_url(tmp_path, machine, expected_
     assert path == tmp_path / "ollama-bin" / "ollama"
     assert path.is_file()
     assert (tmp_path / "ollama-bin" / "VERSION").read_text(encoding="utf-8").strip() == PINNED_VERSION
+
+
+def test_darwin_missing_binary_downloads_zip_and_clears_quarantine(tmp_path):
+    fetched = []
+    cleared = []
+
+    def fake_fetch(url, dest):
+        fetched.append(url)
+        dest.write_bytes(b"zip-bytes")
+
+    path = ensure_binary(
+        tmp_path,
+        platform_name="darwin",
+        fetch=fake_fetch,
+        extract=_fake_extract_darwin,
+        clear_quarantine=lambda install_dir: cleared.append(install_dir),
+    )
+
+    assert fetched == [
+        f"https://github.com/ollama/ollama/releases/download/{PINNED_VERSION}/{DARWIN_ARCHIVE}"
+    ]
+    assert path == tmp_path / "ollama-bin" / "ollama"
+    assert path.is_symlink() or path.is_file()
+    assert cleared == [tmp_path / "ollama-bin"]
+    assert (tmp_path / "ollama-bin" / "VERSION").read_text(encoding="utf-8").strip() == PINNED_VERSION
+
+
+def test_clear_macos_quarantine_runs_xattr(tmp_path):
+    install = tmp_path / "ollama-bin"
+    app = install / "Ollama.app" / "Contents" / "Resources"
+    app.mkdir(parents=True)
+    cli = app / "ollama"
+    cli.write_bytes(b"x")
+    seen = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(cmd)
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    clear_macos_quarantine(install, run=fake_run)
+    assert ["xattr", "-cr", str(install)] in seen
+    assert any(cmd[:3] == ["xattr", "-d", "com.apple.quarantine"] for cmd in seen)
 
 
 def test_existing_pinned_version_is_not_redownloaded(tmp_path):
@@ -96,7 +172,13 @@ def test_mismatched_version_redownloads(tmp_path):
         fetched.append(url)
         dest_path.write_bytes(b"archive")
 
-    ensure_binary(tmp_path, machine="x86_64", fetch=fake_fetch, extract=_fake_extract)
+    ensure_binary(
+        tmp_path,
+        machine="x86_64",
+        platform_name="linux",
+        fetch=fake_fetch,
+        extract=_fake_extract,
+    )
     assert fetched
     assert (dest / "VERSION").read_text(encoding="utf-8").strip() == PINNED_VERSION
 
@@ -170,6 +252,10 @@ def test_download_start_message_states_amd64_size_and_once():
     arm = download_start_message("ollama-linux-arm64.tar.zst")
     assert "this happens once" in arm
     assert "~1.4GB" not in arm
+    mac = download_start_message(DARWIN_ARCHIVE)
+    assert "macOS" in mac
+    assert "~190MB" in mac
+    assert "this happens once" in mac
 
 
 def test_download_message_prints_before_fetch_starts(tmp_path, capsys):
@@ -179,7 +265,13 @@ def test_download_message_prints_before_fetch_starts(tmp_path, capsys):
         seen["before_fetch"] = capsys.readouterr().out
         dest.write_bytes(b"archive")
 
-    ensure_binary(tmp_path, machine="x86_64", fetch=fake_fetch, extract=_fake_extract)
+    ensure_binary(
+        tmp_path,
+        machine="x86_64",
+        platform_name="linux",
+        fetch=fake_fetch,
+        extract=_fake_extract,
+    )
 
     banner = seen["before_fetch"]
     assert "Downloading Ollama" in banner

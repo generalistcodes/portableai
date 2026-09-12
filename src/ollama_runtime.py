@@ -1,13 +1,16 @@
 """
-Linux-only bootstrap for a PortableAI-vendored Ollama binary.
+Bootstrap for a PortableAI-vendored Ollama binary (Linux + macOS).
 
-On first run this downloads a pinned standalone release from GitHub into
-data/ollama-bin/, points OLLAMA_MODELS at data/ollama-models/, and runs
-`ollama serve` as a child of PortableAI. macOS and Windows are
-intentionally not handled here.
+On first run this downloads a pinned release into data/ollama-bin/,
+points OLLAMA_MODELS at data/ollama-models/, and runs `ollama serve` as
+a child of PortableAI. Windows is intentionally not handled here.
 
-The official Linux archives are currently `.tar.zst` (older releases used
-`.tgz`). We pin an exact GitHub tag in PINNED_VERSION / data/ollama-bin/VERSION
+Linux: GitHub `.tar.zst` archives (amd64/arm64).
+macOS: pinned `Ollama-darwin.zip` (contains Ollama.app; CLI at
+Ollama.app/Contents/Resources/ollama). After extract we clear
+com.apple.quarantine so Gatekeeper does not block the first launch.
+
+We pin an exact GitHub tag in PINNED_VERSION / data/ollama-bin/VERSION
 so later starts do not silently drift to a newer download.
 """
 from __future__ import annotations
@@ -22,14 +25,19 @@ import tarfile
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 
 PINNED_VERSION = "v0.34.0"
 RELEASE_BASE = f"https://github.com/ollama/ollama/releases/download/{PINNED_VERSION}"
+DARWIN_ARCHIVE = "Ollama-darwin.zip"
+# Verified against the v0.34.0 Ollama-darwin.zip contents on a real Mac:
+# the CLI lives next to the GUI dylibs inside the app bundle.
+DARWIN_CLI_RELATIVE = Path("Ollama.app") / "Contents" / "Resources" / "ollama"
 DEFAULT_HOST = "127.0.0.1:11434"
 READY_TIMEOUT_SECONDS = 60.0
 
-_ARCHIVE_BY_MACHINE = {
+_ARCHIVE_BY_MACHINE_LINUX = {
     "x86_64": "ollama-linux-amd64.tar.zst",
     "amd64": "ollama-linux-amd64.tar.zst",
     "aarch64": "ollama-linux-arm64.tar.zst",
@@ -72,7 +80,8 @@ class OllamaHandle:
 
 
 def supported_on_this_os(platform_name: str | None = None) -> bool:
-    return (platform_name or sys.platform).startswith("linux")
+    name = platform_name or sys.platform
+    return name.startswith("linux") or name == "darwin"
 
 
 def bin_dir(data_dir: Path) -> Path:
@@ -91,24 +100,36 @@ def version_path(data_dir: Path) -> Path:
     return bin_dir(data_dir) / "VERSION"
 
 
-def archive_name(machine: str | None = None) -> str:
+def darwin_app_path(data_dir: Path) -> Path:
+    return bin_dir(data_dir) / "Ollama.app"
+
+
+def archive_name(machine: str | None = None, platform_name: str | None = None) -> str:
+    plat = platform_name or sys.platform
+    if plat == "darwin":
+        return DARWIN_ARCHIVE
     raw = (machine or platform.machine() or "").strip()
     key = raw.lower()
-    name = _ARCHIVE_BY_MACHINE.get(key)
+    name = _ARCHIVE_BY_MACHINE_LINUX.get(key)
     if name is None:
         raise OllamaRuntimeError(
-            f"PortableAI's bundled Ollama supports linux amd64 and arm64; "
-            f"this machine reports {raw!r}."
+            f"PortableAI's bundled Ollama supports linux amd64/arm64 and macOS; "
+            f"this machine reports platform={plat!r} machine={raw!r}."
         )
     return name
 
 
-def download_url(machine: str | None = None) -> str:
-    return f"{RELEASE_BASE}/{archive_name(machine)}"
+def download_url(machine: str | None = None, platform_name: str | None = None) -> str:
+    return f"{RELEASE_BASE}/{archive_name(machine, platform_name)}"
 
 
 def download_start_message(archive_filename: str) -> str:
     """User-facing banner printed *before* the HTTP download begins."""
+    if archive_filename == DARWIN_ARCHIVE:
+        return (
+            f"Downloading Ollama {PINNED_VERSION} for macOS (~190MB)... this happens once "
+            "and may take a few minutes."
+        )
     if "amd64" in archive_filename:
         return (
             f"Downloading Ollama {PINNED_VERSION} (~1.4GB)... this happens once "
@@ -144,8 +165,10 @@ def ensure_binary(
     data_dir: Path,
     *,
     machine: str | None = None,
+    platform_name: str | None = None,
     fetch=None,
     extract=None,
+    clear_quarantine=None,
 ) -> Path:
     """Return data/ollama-bin/ollama, downloading the pinned release if needed."""
     dest = bin_dir(data_dir)
@@ -153,8 +176,9 @@ def ensure_binary(
     if is_pinned_install(data_dir):
         return binary_path(data_dir)
 
-    url = download_url(machine)
-    archive = dest / archive_name(machine)
+    plat = platform_name or sys.platform
+    url = download_url(machine, plat)
+    archive = dest / archive_name(machine, plat)
     print(download_start_message(archive.name), flush=True)
     try:
         (fetch or _fetch)(url, archive)
@@ -167,9 +191,63 @@ def ensure_binary(
         raise OllamaRuntimeError(
             f"extracted Ollama {PINNED_VERSION} but {installed} is missing"
         )
+
+    if plat == "darwin":
+        clearer = clear_quarantine or clear_macos_quarantine
+        clearer(dest)
+
     version_path(data_dir).write_text(PINNED_VERSION + "\n", encoding="utf-8")
     print(f"Pinned bundled Ollama {PINNED_VERSION} at {installed}")
     return installed
+
+
+def clear_macos_quarantine(install_dir: Path, *, run=subprocess.run) -> None:
+    """Strip com.apple.quarantine from the extracted app / CLI.
+
+    Downloads from the browser (and urllib) get this attribute; without
+    clearing it, the first `ollama serve` can hit a Gatekeeper block.
+    We clear the whole install dir recursively so bundled dylibs are
+    covered too. Failures are logged loudly — we do not pretend launch
+    will succeed if xattr refused to run.
+    """
+    targets = [install_dir]
+    app = install_dir / "Ollama.app"
+    if app.is_dir():
+        targets.append(app)
+    cli = install_dir / DARWIN_CLI_RELATIVE
+    if cli.exists():
+        targets.append(cli)
+
+    # Prefer recursive clear on the install tree; also try -d on known paths.
+    result = run(
+        ["xattr", "-cr", str(install_dir)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        print(
+            f"WARNING: could not recursively clear quarantine on {install_dir}: "
+            f"{detail or f'exit {result.returncode}'}",
+            flush=True,
+        )
+
+    for path in targets:
+        if not path.exists():
+            continue
+        one = run(
+            ["xattr", "-d", "com.apple.quarantine", str(path)],
+            capture_output=True,
+            text=True,
+        )
+        # exit 1 often means the attribute was already absent — not fatal.
+        if one.returncode not in (0, 1):
+            detail = (one.stderr or one.stdout or "").strip()
+            print(
+                f"WARNING: xattr -d com.apple.quarantine failed on {path}: "
+                f"{detail or f'exit {one.returncode}'}",
+                flush=True,
+            )
 
 
 def start_serve(
@@ -248,16 +326,25 @@ def ensure_and_start(
     *,
     host: str = DEFAULT_HOST,
     machine: str | None = None,
+    platform_name: str | None = None,
     fetch=None,
     extract=None,
+    clear_quarantine=None,
     popen=subprocess.Popen,
     wait=None,
     which=shutil.which,
 ) -> OllamaHandle:
-    if not supported_on_this_os():
-        raise OllamaRuntimeError("bundled Ollama is only supported on Linux")
+    if not supported_on_this_os(platform_name):
+        raise OllamaRuntimeError("bundled Ollama is only supported on Linux and macOS")
     warn_if_system_ollama(which=which)
-    ensure_binary(data_dir, machine=machine, fetch=fetch, extract=extract)
+    ensure_binary(
+        data_dir,
+        machine=machine,
+        platform_name=platform_name,
+        fetch=fetch,
+        extract=extract,
+        clear_quarantine=clear_quarantine,
+    )
     return start_serve(data_dir, host=host, popen=popen, wait=wait)
 
 
@@ -304,18 +391,23 @@ def _extract_archive(archive: Path, dest_dir: Path) -> None:
             raise OllamaRuntimeError(
                 f"failed to extract {name}: {result.stderr.strip() or result.stdout.strip()}"
             )
+        _place_binary_linux(dest_dir)
     elif name.endswith(".tgz") or name.endswith(".tar.gz"):
         with tarfile.open(archive, "r:gz") as tf:
             if sys.version_info >= (3, 12):
                 tf.extractall(dest_dir, filter="data")
             else:
                 tf.extractall(dest_dir)
+        _place_binary_linux(dest_dir)
+    elif name.endswith(".zip"):
+        with zipfile.ZipFile(archive, "r") as zf:
+            zf.extractall(dest_dir)
+        _place_binary_darwin(dest_dir)
     else:
         raise OllamaRuntimeError(f"unsupported Ollama archive format: {name}")
-    _place_binary(dest_dir)
 
 
-def _place_binary(dest_dir: Path) -> None:
+def _place_binary_linux(dest_dir: Path) -> None:
     """Make sure data/ollama-bin/ollama exists (tarball layout is usually bin/ollama)."""
     target = dest_dir / "ollama"
     if target.is_file() and not target.is_symlink():
@@ -330,15 +422,62 @@ def _place_binary(dest_dir: Path) -> None:
     target.symlink_to(Path("bin") / "ollama")
 
 
+def _place_binary_darwin(dest_dir: Path) -> None:
+    """Locate the CLI inside Ollama.app and expose it as data/ollama-bin/ollama."""
+    cli = dest_dir / DARWIN_CLI_RELATIVE
+    if not cli.is_file():
+        # Defensive discovery if Apple/Ollama moves the layout.
+        found = None
+        for candidate in dest_dir.rglob("ollama"):
+            if candidate.is_file() and candidate.name == "ollama" and "Contents/Resources" in str(candidate):
+                found = candidate
+                break
+        if found is None:
+            raise OllamaRuntimeError(
+                f"extracted {DARWIN_ARCHIVE} but could not find "
+                f"Ollama.app/Contents/Resources/ollama under {dest_dir}"
+            )
+        cli = found
+
+    resources = cli.parent
+    # zipfile.extractall does not reliably preserve +x; llama-server must be
+    # executable or generate/chat fails with "permission denied".
+    for name in ("ollama", "llama-server", "llama-quantize"):
+        helper = resources / name
+        if helper.is_file():
+            helper.chmod(0o755)
+    gui = dest_dir / "Ollama.app" / "Contents" / "MacOS" / "Ollama"
+    if gui.is_file():
+        gui.chmod(0o755)
+
+    target = dest_dir / "ollama"
+    if target.exists() or target.is_symlink():
+        target.unlink()
+    # Prefer a relative symlink so the whole data/ollama-bin/ folder stays portable.
+    try:
+        rel = cli.relative_to(dest_dir)
+        target.symlink_to(rel)
+    except ValueError:
+        target.symlink_to(cli)
+
+
 def _prepend_library_path(env: dict[str, str], install_dir: Path) -> None:
     extras = []
-    for candidate in (install_dir / "lib" / "ollama", install_dir / "lib"):
+    for candidate in (
+        install_dir / "lib" / "ollama",
+        install_dir / "lib",
+        install_dir / "Ollama.app" / "Contents" / "Resources",
+    ):
         if candidate.is_dir():
             extras.append(str(candidate.resolve()))
     if not extras:
         return
-    existing = env.get("LD_LIBRARY_PATH")
-    env["LD_LIBRARY_PATH"] = os.pathsep.join(extras + ([existing] if existing else []))
+    if sys.platform == "darwin":
+        key = "DYLD_LIBRARY_PATH"
+    else:
+        key = "LD_LIBRARY_PATH"
+    existing = env.get(key)
+    env[key] = os.pathsep.join(extras + ([existing] if existing else []))
 
 
 def _linux_pdeathsig() -> None:
