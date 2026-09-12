@@ -28,9 +28,15 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+if not getattr(sys, "frozen", False):
+    sys.path.insert(0, str(ROOT / "src"))
+    sys.path.insert(0, str(ROOT / "ui"))
 
 
 def _ensure_dependencies() -> None:
+    if getattr(sys, "frozen", False):
+        return
+
     missing = []
     for module_name, package_name in (("flask", "flask"), ("requests", "requests")):
         try:
@@ -85,21 +91,25 @@ def main() -> None:
 
     _ensure_dependencies()
 
-    # Load ui/server.py by path so a leftover server.py in the repo root
-    # cannot shadow the real Flask app.
-    import importlib.util
+    if getattr(sys, "frozen", False):
+        import server
+    else:
+        # Load ui/server.py by path so a leftover server.py in the repo root
+        # cannot shadow the real Flask app.
+        import importlib.util
 
-    server_path = ROOT / "ui" / "server.py"
-    spec = importlib.util.spec_from_file_location("server", server_path)
-    server = importlib.util.module_from_spec(spec)
-    sys.modules["server"] = server
-    spec.loader.exec_module(server)
+        server_path = ROOT / "ui" / "server.py"
+        spec = importlib.util.spec_from_file_location("server", server_path)
+        server = importlib.util.module_from_spec(spec)
+        sys.modules["server"] = server
+        spec.loader.exec_module(server)
 
     if args.stop:
         server.stop_our_server(args.port)
         return
 
-    sys.path.insert(0, str(ROOT / "src"))
+    if not getattr(sys, "frozen", False):
+        sys.path.insert(0, str(ROOT / "src"))
     from ollama_runtime import (  # noqa: E402
         OllamaRuntimeError,
         ensure_and_start,
@@ -132,7 +142,7 @@ def main() -> None:
     try:
         if supported_on_this_os():
             try:
-                runtime = ensure_and_start(ROOT / "data", host=args.ollama_host)
+                runtime = ensure_and_start(server.DATA_DIR, host=args.ollama_host)
             except OllamaRuntimeError as exc:
                 print(f"Failed to start bundled Ollama: {exc}", file=sys.stderr)
                 sys.exit(1)

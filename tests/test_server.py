@@ -1102,6 +1102,15 @@ def test_is_local_client_only_loopback(app):
     assert app._is_local_client("192.168.1.50") is False
 
 
+def test_is_our_server_process_matches_frozen_binary(app, monkeypatch):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", "/tmp/_MEIxxx", raising=False)
+    monkeypatch.setattr(sys, "executable", "/home/gg/portableai")
+    assert app._is_our_server_process("/home/gg/portableai --port 5050")
+    assert app._is_our_server_process("./portableai")
+    assert not app._is_our_server_process("nginx")
+
+
 def test_is_our_server_process_matches_run_py(app):
     assert app._is_our_server_process("./venv/bin/python run.py --restart")
     assert app._is_our_server_process("python ui/server.py")

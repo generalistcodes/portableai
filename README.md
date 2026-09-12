@@ -30,6 +30,12 @@ tutorials skip — how to actually test it.
 
 ## Prerequisites
 
+**Linux, compiled binary:** no Python. See **Linux executable** below.
+Copy `portableai`, run it. First run still needs internet for the
+vendored Ollama download unless `data/ollama-bin/` is already sitting
+next to the binary.
+
+**From source (any OS):**
 - Python 3.10+
 - **Linux:** nothing else. `python run.py` downloads a pinned standalone
   Ollama into `data/ollama-bin/` on first run, starts it for you, and
@@ -68,6 +74,7 @@ src/
   persona_loader.py              # parses a Modelfile into a structured Persona
   ollama_client.py               # thin wrapper over Ollama's REST API
   ollama_runtime.py              # Linux: download/pin/run a bundled Ollama subprocess
+  app_paths.py                   # frozen vs source: resource root vs writable data/
 ui/
   server.py                      # Flask backend: proxies to Ollama, logs, settings, chat history
   model_catalog.json             # curated list of downloadable models shown in Settings
@@ -78,8 +85,11 @@ tests/
   test_ollama_runtime.py         # unit tests for vendored Ollama download/lifecycle, fully mocked
   test_conversation_store.py     # unit tests for chat history, pure sqlite
   test_server.py                 # unit tests for the UI backend, Ollama mocked
+  test_app_paths.py              # frozen vs source: data/ next to the binary, not the extract dir
   test_integration_persona.py    # real Ollama + real model, skips if unavailable
   test_benchmark_*.py            # unit tests for the model benchmark (Ollama mocked)
+portableai.spec                  # Linux-only PyInstaller one-file build (Mac/Windows later)
+requirements-dev.txt             # PyInstaller; build-time only, not needed to run from source
 docs/
   MODEL_BENCHMARK.md             # generated from benchmarks/prompts.json
   BENCHMARK_RESULTS.md           # last real run, with a recommendation
@@ -115,14 +125,15 @@ Fast unit tests (no Ollama required — this is what CI would run):
 pytest
 ```
 
-This runs 219 tests covering: Modelfile parsing edge cases (missing `FROM`,
+This runs 225 tests covering: Modelfile parsing edge cases (missing `FROM`,
 unterminated triple-quoted `SYSTEM` blocks, malformed `PARAMETER` lines,
 numeric casting), the Ollama client's request/response handling with
 `requests` fully mocked, Linux Ollama vendoring (download URL, version pin,
 child `OLLAMA_MODELS`) with download/subprocess mocked, the Flask UI backend
 (pairing, auth, chat history, logs, catalog), SQLite conversation
-storage, and the model-quality benchmark (prompt catalog, mocked collector,
-refusal heuristic) — no network, no GPU, no waiting on inference.
+storage, the model-quality benchmark (prompt catalog, mocked collector,
+refusal heuristic), and frozen vs source path helpers for the Linux
+one-file build — no network, no GPU, no waiting on inference.
 
 Integration tests (spins up the real personas against a real, running
 Ollama):
@@ -182,9 +193,10 @@ A small self-hosted, dark-mode chat UI sits on top of the same
 just proxies to Ollama and adds logging + settings.
 
 ```bash
-python run.py              # the only supported start path (Linux: vendors + starts Ollama; replaces leftover UI on 5050)
+python run.py              # from source (Linux: vendors + starts Ollama; replaces leftover UI on 5050)
 python run.py --restart    # stop ours on 5050, then start
 python run.py --stop       # stop ours on 5050 and exit
+./portableai               # Linux one-file build — same flags, no Python needed
 ```
 
 Do **not** run `python ui/server.py` — that is not a supported launch path.
@@ -281,6 +293,7 @@ what carries over cleanly and what doesn't:
 - `venv/` (or any virtualenv folder) — a Python virtual environment is tied to the exact OS and Python build it was created with; copying one from Linux and running it on Windows will not work. Don't zip/copy this folder.
 - **Ollama on macOS and Windows** — not bundled yet. Separate install per OS, from [ollama.com/download](https://ollama.com/download). Those platforms still talk to Ollama over HTTP the old way.
 - GPU / CUDA / ROCm — the Linux vendored binary is **CPU-only for now**. PortableAI does not run the official installer's GPU detection, and it does not download CUDA or ROCm extras. If you have a GPU and care about it, install Ollama yourself from ollama.com (which *does* wire up GPU support) rather than assuming this bundled copy will use it. That is a deliberate trade-off for "one folder, one command", not a silent performance regression we hope you won't notice.
+- `dist/portableai` — the compiled Linux executable will not run on macOS or Windows. Those builds are planned, not shipped.
 
 **Easiest way to run it on a new machine:**
 
@@ -300,6 +313,41 @@ None of the dependencies (`flask`, `requests`, `pytest`) require a C
 compiler or platform-specific build step — they all ship pre-built wheels
 for Windows/macOS/Linux on PyPI, so `pip install` behaves the same way
 everywhere.
+
+## Linux executable (no Python)
+
+This is the double-click-and-run path for Linux. It is **Linux-only for
+now** — macOS and Windows one-file builds are planned but not yet built,
+same class of caveat as the CPU-only vendored Ollama: we are not
+pretending a `.exe` or a `.app` exists when it doesn't.
+
+Build it on a Linux amd64 machine (PyInstaller is build-time only; end
+users of the binary never install it):
+
+```bash
+pip install -r requirements-dev.txt
+pyinstaller portableai.spec
+```
+
+That produces a single ELF file, `dist/portableai`, about **13 MB**. Copy
+just that file — not this repo, not `venv/` — to another Linux machine of
+the same architecture, `chmod +x` it, and run `./portableai`. Same flags
+as `run.py` (`--port`, `--ollama-host`, `--restart`, `--stop`).
+
+The 13 MB is the chat UI plus an embedded Python runtime. It is **not**
+Ollama and it is **not** a model. Writable state lives in a `data/`
+folder **next to the binary**, not in the temp directory PyInstaller
+unpacks at runtime (that extract dir is deleted when the process exits).
+First run still downloads the pinned Ollama (~1.4 GB) into
+`data/ollama-bin/` unless that folder is already there; models you pull
+go in `data/ollama-models/`. The CPU-only Ollama caveat above still
+applies.
+
+```bash
+./portableai                 # UI on http://localhost:5050
+./portableai --port 5051     # if 5050 is already taken
+```
+
 
 ## Downloading models from the UI
 
@@ -442,6 +490,8 @@ Roughly in order of what most affects the demo/blog experience:
    `<pre><code>`, but there's no one-click copy affordance yet.
 4. **Stop-generation / regenerate** — no way to cancel a slow reply or
    ask the persona to try again without retyping the question.
+5. **macOS / Windows executables** — `portableai.spec` is Linux-only.
+   Those platforms still start from source with `python run.py`.
 
 ## Extending this
 

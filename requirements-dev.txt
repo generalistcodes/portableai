@@ -1,0 +1,3 @@
+# Build-time only. End users of the compiled Linux binary do not need these.
+-r requirements.txt
+pyinstaller>=6.0

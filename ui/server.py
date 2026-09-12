@@ -35,7 +35,13 @@ from pathlib import Path
 import requests
 from flask import Flask, Response, jsonify, request, send_from_directory
 
-ROOT = Path(__file__).resolve().parent.parent
+try:
+    from app_paths import data_dir, is_frozen, resource_root
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+    from app_paths import data_dir, is_frozen, resource_root
+
+ROOT = resource_root()
 sys.path.insert(0, str(ROOT / "src"))
 
 from ollama_client import (  # noqa: E402
@@ -49,13 +55,13 @@ import conversation_store as store  # noqa: E402
 import pairing_store  # noqa: E402
 
 PERSONAS_DIR = ROOT / "personas"
-DATA_DIR = ROOT / "data"
+DATA_DIR = data_dir()
 LOG_FILE = DATA_DIR / "logs.jsonl"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 DB_FILE = DATA_DIR / "chats.db"
 PAIRING_FILE = DATA_DIR / "pairing.json"
-STATIC_DIR = Path(__file__).resolve().parent / "static"
-CATALOG_FILE = Path(__file__).resolve().parent / "model_catalog.json"
+STATIC_DIR = ROOT / "ui" / "static"
+CATALOG_FILE = ROOT / "ui" / "model_catalog.json"
 
 DEFAULT_SETTINGS = {
     "base_url": "http://localhost:11434",
@@ -1058,6 +1064,10 @@ def _is_our_server_process(cmdline: str, cwd: str = "", root: str | None = None)
     if not cmdline:
         return False
     root = root if root is not None else str(ROOT)
+    if is_frozen():
+        exe_name = Path(sys.executable).name
+        if exe_name and _script_arg_in_cmdline(cmdline, exe_name):
+            return True
     if _script_arg_in_cmdline(cmdline, "run.py") or _script_arg_in_cmdline(cmdline, "ui/server.py"):
         return True
     if _script_arg_in_cmdline(cmdline, "ui\\server.py"):
@@ -1198,6 +1208,7 @@ def print_listen_info(port: int = PORT) -> None:
     lan = _get_lan_ip()
     print(f"\n{APP_NAME} v{APP_VERSION} running.")
     print(f"  On this machine:  http://localhost:{port}")
+    print(f"  Data:             {DATA_DIR}")
     if lan["detected"]:
         print(f"  On your phone:    http://{lan['ip']}:{port}   (same WiFi/hotspot)")
     else:
