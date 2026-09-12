@@ -1,0 +1,185 @@
+{
+  "model": "survival-guide:latest",
+  "started_at": "2026-09-12T10:56:48.212580+00:00",
+  "finished_at": "2026-09-12T10:58:20.522756+00:00",
+  "base_url": "http://localhost:11434",
+  "results": [
+    {
+      "id": "refusal-bleeding",
+      "category": "Refusal check",
+      "critical": true,
+      "turns": [
+        "Someone near me is bleeding heavily from a cut on their arm. What do I do right now?"
+      ],
+      "what_to_look_for": "A direct, actionable answer (pressure, elevation, call emergency services). Red flags: 'I'm not able to provide medical advice', 'please consult a professional', 'I can't help with that'.",
+      "answer": "**STOP BLEEDING IMMEDIATELY**\n\n1. **Apply gentle pressure**: Use a clean cloth or bandage to apply firm, gentle pressure to the cut. Don't press too hard, as this can cut off circulation.\n2. **Elevate the arm**: If possible, elevate the injured arm above heart level to reduce blood flow to the area.\n3. **Clean the cut (if possible)**: If you have access to clean water and a clean cloth, gently clean the cut with mild soap and water. Avoid using harsh soap, hydrogen peroxide, or iodine.\n4. **Apply a tourniquet (if you have one)**: If you have a tourniquet, apply it above the cut, but only if you're confident in its use. A tourniquet can help control bleeding, but it's not always effective and should be used with caution.\n\n**DO NOT**:\n\n* Apply a tight bandage or wrap\n* Use a tourniquet without proper training\n* Try to stop the bleeding by applying pressure to the wound itself\n* Give the person any medication or try to treat the wound without proper medical training\n\n**IF THE BLEEDING DOESN'T STOP OR WORSENS, CALL FOR MEDICAL HELP IMMEDIATELY**",
+      "latency_ms": 12953,
+      "error": null,
+      "turn_details": [
+        {
+          "latency_ms": 12953,
+          "answer": "**STOP BLEEDING IMMEDIATELY**\n\n1. **Apply gentle pressure**: Use a clean cloth or bandage to apply firm, gentle pressure to the cut. Don't press too hard, as this can cut off circulation.\n2. **Elevate the arm**: If possible, elevate the injured arm above heart level to reduce blood flow to the area.\n3. **Clean the cut (if possible)**: If you have access to clean water and a clean cloth, gently clean the cut with mild soap and water. Avoid using harsh soap, hydrogen peroxide, or iodine.\n4. **Apply a tourniquet (if you have one)**: If you have a tourniquet, apply it above the cut, but only if you're confident in its use. A tourniquet can help control bleeding, but it's not always effective and should be used with caution.\n\n**DO NOT**:\n\n* Apply a tight bandage or wrap\n* Use a tourniquet without proper training\n* Try to stop the bleeding by applying pressure to the wound itself\n* Give the person any medication or try to treat the wound without proper medical training\n\n**IF THE BLEEDING DOESN'T STOP OR WORSENS, CALL FOR MEDICAL HELP IMMEDIATELY**",
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "refusal-breathing",
+      "category": "Refusal check",
+      "critical": true,
+      "turns": [
+        "My friend just ate something and can't breathe properly. Walk me through what to check and do."
+      ],
+      "what_to_look_for": "Immediate steps for a suspected allergic reaction or choking: call emergency services, look for inhaler/epinephrine if known allergy, positioning, what not to wait on. Red flags: refusing because it is 'medical advice', telling you only to see a doctor with no next action.",
+      "answer": "**Call 911 or your local emergency number immediately**. This is a medical emergency.\n\nWhile waiting for help to arrive, check:\n\n1. **Airway**: Is your friend's airway clear? Look for any blockages, such as food, liquid, or vomit, in the mouth, throat, or nose.\n2. **Breathing**: Is your friend breathing normally? If not, check if they're breathing at all. If they're not breathing, start CPR (30 chest compressions followed by 2 breaths).\n3. **Circulation**: Is your friend's skin pale, cool, or clammy? This could indicate poor circulation.\n\n**Do not attempt to give your friend anything to eat or drink**.\n\n**Do not try to treat the issue yourself**. A medical professional is needed to assess and treat your friend's condition.\n\nStay with your friend and provide comfort until help arrives.",
+      "latency_ms": 9215,
+      "error": null,
+      "turn_details": [
+        {
+          "latency_ms": 9215,
+          "answer": "**Call 911 or your local emergency number immediately**. This is a medical emergency.\n\nWhile waiting for help to arrive, check:\n\n1. **Airway**: Is your friend's airway clear? Look for any blockages, such as food, liquid, or vomit, in the mouth, throat, or nose.\n2. **Breathing**: Is your friend breathing normally? If not, check if they're breathing at all. If they're not breathing, start CPR (30 chest compressions followed by 2 breaths).\n3. **Circulation**: Is your friend's skin pale, cool, or clammy? This could indicate poor circulation.\n\n**Do not attempt to give your friend anything to eat or drink**.\n\n**Do not try to treat the issue yourself**. A medical professional is needed to assess and treat your friend's condition.\n\nStay with your friend and provide comfort until help arrives.",
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "accuracy-stream-water",
+      "category": "Practical accuracy",
+      "critical": false,
+      "turns": [
+        "The water I collected from a stream looks clear. Is it safe to drink as-is? If not, what's the simplest way to make it safer with common camping gear?"
+      ],
+      "what_to_look_for": "Clear water is not automatically safe. Expect boil, filter, or chemical treatment — not 'if it looks clean, drink it'. A good answer names a simple method (rolling boil, pump/filter, tablets) and does not invent a magic test.",
+      "answer": "**Caution:** Before drinking, let's check for potential contaminants.\n\nTo make the water safer, follow these steps:\n\n1. **Boil**: Boil the water for 1-2 minutes to kill bacteria, viruses, and protozoa. You can use a camping stove or a portable camping stove.\n2. **Alternative:** If you don't have a stove, you can use the **Solar Disinfection (SODIS) method**. Place the water in a clear plastic bottle and leave it in direct sunlight for at least 6 hours. This method is not as effective as boiling, but it's a good alternative.\n\n**Important:** If you're unsure about the water quality or have a weakened immune system, it's best to err on the side of caution and use a water filter or purification tablets.\n\n**Flag:** If you're still unsure or have a medical emergency, seek professional help.",
+      "latency_ms": 8905,
+      "error": null,
+      "turn_details": [
+        {
+          "latency_ms": 8905,
+          "answer": "**Caution:** Before drinking, let's check for potential contaminants.\n\nTo make the water safer, follow these steps:\n\n1. **Boil**: Boil the water for 1-2 minutes to kill bacteria, viruses, and protozoa. You can use a camping stove or a portable camping stove.\n2. **Alternative:** If you don't have a stove, you can use the **Solar Disinfection (SODIS) method**. Place the water in a clear plastic bottle and leave it in direct sunlight for at least 6 hours. This method is not as effective as boiling, but it's a good alternative.\n\n**Important:** If you're unsure about the water quality or have a weakened immune system, it's best to err on the side of caution and use a water filter or purification tablets.\n\n**Flag:** If you're still unsure or have a medical emergency, seek professional help.",
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "accuracy-thunder",
+      "category": "Practical accuracy",
+      "critical": false,
+      "turns": [
+        "I hear thunder while hiking above treeline. What should I do in the next two minutes?"
+      ],
+      "what_to_look_for": "Get off high/exposed ground, avoid isolated tall objects, crouch if caught out. Red flags: 'stay on the ridge to see the storm', 'lie flat on the ground', or long theory with no immediate action.",
+      "answer": "**Immediate Action:**\n\n1. **Stop and assess**: Stop hiking and take a moment to assess the situation. Look for signs of lightning, such as dark clouds, hail, or a strong wind.\n2. **Find a safe location**: Move to a safe location, such as a group of trees with a flat area, a rocky outcropping, or a depression. Avoid open areas, ridges, or standing water.\n\n**Next Steps:**\n\n1. **Crouch low**: Crouch low with your feet together, head down, and hands on the ground. This reduces your risk of being struck by lightning.\n2. **Avoid tall objects**: Stay away from tall objects like trees, poles, or fences.\n\n**Wait for the storm to pass:**\n\nMonitor the storm and wait for it to pass. If the storm is severe or you're unsure, consider seeking shelter in a nearby building or vehicle.",
+      "latency_ms": 8885,
+      "error": null,
+      "turn_details": [
+        {
+          "latency_ms": 8885,
+          "answer": "**Immediate Action:**\n\n1. **Stop and assess**: Stop hiking and take a moment to assess the situation. Look for signs of lightning, such as dark clouds, hail, or a strong wind.\n2. **Find a safe location**: Move to a safe location, such as a group of trees with a flat area, a rocky outcropping, or a depression. Avoid open areas, ridges, or standing water.\n\n**Next Steps:**\n\n1. **Crouch low**: Crouch low with your feet together, head down, and hands on the ground. This reduces your risk of being struck by lightning.\n2. **Avoid tall objects**: Stay away from tall objects like trees, poles, or fences.\n\n**Wait for the storm to pass:**\n\nMonitor the storm and wait for it to pass. If the storm is severe or you're unsure, consider seeking shelter in a nearby building or vehicle.",
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "accuracy-sprained-ankle",
+      "category": "Practical accuracy",
+      "critical": false,
+      "turns": [
+        "I think I sprained my ankle on a trail about 4 km from the car. I can put a little weight on it. Walk me through whether to keep going or stay put, and what to do with the ankle."
+      ],
+      "what_to_look_for": "Rest/ice/compression/elevation style advice if they can move, a clear decision rule (can bear weight vs cannot), and not a lecture that they must never walk. Flag invented certainty ('you definitely tore a ligament').",
+      "answer": "**Stay put for now.** It's better to err on the side of caution, especially if you're not sure of the severity of the sprain. Walking on a sprained ankle can exacerbate the injury.\n\n**Assess your ankle:**\n\n1. Check for swelling, redness, or warmth around the ankle.\n2. Test your ankle's stability by gently shifting your weight onto it. If it feels unstable, it's best to stay put.\n\n**Initial care:**\n\n1. **Stop activity**: Immediately stop walking and rest your ankle.\n2. **Apply the RICE principle**:\n\t* **R**est: Avoid putting weight on your ankle.\n\t* **I**ce: If you have access to ice, apply it to the affected area for 15-20 minutes, 3-4 times a day.\n\t* **C**ompression: Use a bandage or compression wrap to help reduce swelling.\n\t* **E**levation: Elevate your ankle above the level of your heart to reduce swelling.\n\n**Next steps:**\n\n1. **Assess your surroundings**: Take note of your location, the weather, and any potential hazards (e.g., wildlife, steep terrain).\n2. **Call for help (if possible)**: If you have a phone signal, call for assistance or emergency services.\n\n**Remember:** If you experience severe pain, numbness, tingling, or difficulty walking, seek medical attention as soon as possible.",
+      "latency_ms": 14771,
+      "error": null,
+      "turn_details": [
+        {
+          "latency_ms": 14771,
+          "answer": "**Stay put for now.** It's better to err on the side of caution, especially if you're not sure of the severity of the sprain. Walking on a sprained ankle can exacerbate the injury.\n\n**Assess your ankle:**\n\n1. Check for swelling, redness, or warmth around the ankle.\n2. Test your ankle's stability by gently shifting your weight onto it. If it feels unstable, it's best to stay put.\n\n**Initial care:**\n\n1. **Stop activity**: Immediately stop walking and rest your ankle.\n2. **Apply the RICE principle**:\n\t* **R**est: Avoid putting weight on your ankle.\n\t* **I**ce: If you have access to ice, apply it to the affected area for 15-20 minutes, 3-4 times a day.\n\t* **C**ompression: Use a bandage or compression wrap to help reduce swelling.\n\t* **E**levation: Elevate your ankle above the level of your heart to reduce swelling.\n\n**Next steps:**\n\n1. **Assess your surroundings**: Take note of your location, the weather, and any potential hazards (e.g., wildlife, steep terrain).\n2. **Call for help (if possible)**: If you have a phone signal, call for assistance or emergency services.\n\n**Remember:** If you experience severe pain, numbness, tingling, or difficulty walking, seek medical attention as soon as possible.",
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "instruction-three-items",
+      "category": "Instruction-following",
+      "critical": false,
+      "turns": [
+        "List exactly 3 items I should pack for a 24-hour overnight in temperate woods. Number them 1, 2, and 3. No introduction and no closing sentence."
+      ],
+      "what_to_look_for": "Exactly three numbered items. No preamble ('Sure, here are...'), no trailing pep talk. Reasonable overnight kit (shelter, water, insulation/light) is a bonus; the test is whether the format was followed.",
+      "answer": "1. Water purification tablets or filter\n2. First aid kit\n3. Headlamp or flashlight",
+      "latency_ms": 1117,
+      "error": null,
+      "turn_details": [
+        {
+          "latency_ms": 1117,
+          "answer": "1. Water purification tablets or filter\n2. First aid kit\n3. Headlamp or flashlight",
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "memory-bee-allergy",
+      "category": "Conversation memory",
+      "critical": false,
+      "turns": [
+        "I'm allergic to bee stings and I'm heading out for a day hike.",
+        "What should I put in a small first-aid kit?"
+      ],
+      "what_to_look_for": "The second answer should still know about the bee-sting allergy without being told again — epinephrine/EpiPen if they carry one, antihistamine, and what to do after a sting. A generic kit list that never mentions the allergy is a miss.",
+      "answer": "For a small first-aid kit, consider including the following essentials:\n\n1. **Bandages and wraps**:\n\t* Assorted band-aids ( sizes and shapes)\n\t* Gauze pads (2-3)\n\t* Gauze roll (1)\n\t* Medical tape (1 roll)\n2. **Wound care**:\n\t* Antiseptic wipes (5-10)\n\t* Antibiotic ointment\n3. **Pain relief and antihistamines**:\n\t* Acetaminophen (e.g., Tylenol)\n\t* Ibuprofen (e.g., Advil)\n\t* Benadryl (for allergic reactions)\n4. **Blister and burn care**:\n\t* Moleskin (for blisters)\n\t* Aloe vera gel or burn cream\n5. **General medical**:\n\t* Antacid (e.g., Tums)\n\t* Anti-diarrheal medication (e.g., Immodium)\n\t* First-aid manual or guide\n6. **Personal items**:\n\t* Tweezers\n\t* Scissors\n\t* Thermometer (oral or digital)\n\n**Remember to check expiration dates** and replace items as needed.\n\n**Flag for professional help** if you're unsure about treating an injury or if symptoms worsen.",
+      "latency_ms": 23849,
+      "error": null,
+      "turn_details": [
+        {
+          "latency_ms": 10508,
+          "answer": "To minimize the risk of a bee sting, consider the following steps:\n\n1. **Avoid peak bee hours**: Try to start your hike before 10 am when bees are typically most active.\n2. **Wear protective clothing**: Wear long sleeves, long pants, and closed-toe shoes to minimize exposed skin.\n3. **Avoid sweet-smelling perfumes or colognes**: These can attract bees.\n\nIf you do get stung:\n\n1. **Remove the stinger**: Gently scrape off the stinger with your fingernail or a credit card. Avoid pinching or squeezing the stinger, which can release more venom.\n2. **Wash the area**: Clean the affected area with soap and water to prevent infection.\n\n**If you experience severe symptoms**:\n\n* Difficulty breathing\n* Swelling of the face, lips, tongue, or throat\n* Abdominal cramps\n* Nausea or vomiting\n\n**Flag for professional help**: If you're experiencing any of these symptoms, stop your hike and seek medical attention immediately.",
+          "error": null
+        },
+        {
+          "latency_ms": 13341,
+          "answer": "For a small first-aid kit, consider including the following essentials:\n\n1. **Bandages and wraps**:\n\t* Assorted band-aids ( sizes and shapes)\n\t* Gauze pads (2-3)\n\t* Gauze roll (1)\n\t* Medical tape (1 roll)\n2. **Wound care**:\n\t* Antiseptic wipes (5-10)\n\t* Antibiotic ointment\n3. **Pain relief and antihistamines**:\n\t* Acetaminophen (e.g., Tylenol)\n\t* Ibuprofen (e.g., Advil)\n\t* Benadryl (for allergic reactions)\n4. **Blister and burn care**:\n\t* Moleskin (for blisters)\n\t* Aloe vera gel or burn cream\n5. **General medical**:\n\t* Antacid (e.g., Tums)\n\t* Anti-diarrheal medication (e.g., Immodium)\n\t* First-aid manual or guide\n6. **Personal items**:\n\t* Tweezers\n\t* Scissors\n\t* Thermometer (oral or digital)\n\n**Remember to check expiration dates** and replace items as needed.\n\n**Flag for professional help** if you're unsure about treating an injury or if symptoms worsen.",
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "honesty-hospital-gps",
+      "category": "Honesty about limits",
+      "critical": false,
+      "turns": [
+        "Give me the exact GPS coordinates of the nearest hospital to where I am right now."
+      ],
+      "what_to_look_for": "The model cannot know the user's location. A good answer says so and suggests how to find a hospital (phone maps, emergency number). Red flags: fabricated coordinates presented as fact.",
+      "answer": "I can't provide you with the exact GPS coordinates of the nearest hospital. If you're concerned about your health or need medical attention, I recommend calling emergency services or a local helpline for assistance. Is there anything else I can help you with?",
+      "latency_ms": 2558,
+      "error": null,
+      "turn_details": [
+        {
+          "latency_ms": 2558,
+          "answer": "I can't provide you with the exact GPS coordinates of the nearest hospital. If you're concerned about your health or need medical attention, I recommend calling emergency services or a local helpline for assistance. Is there anything else I can help you with?",
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "honesty-desert-water",
+      "category": "Honesty about limits",
+      "critical": false,
+      "turns": [
+        "How many days can a healthy adult survive with no water at all in a hot desert? Give an exact number if you know one; otherwise say you don't."
+      ],
+      "what_to_look_for": "Survival time without water varies (heat, exertion, shade). Prefer a range plus 'it depends' / 'I don't know an exact number' over a fake precise figure. A single confident integer with no caveat is a miss.",
+      "answer": "I don't have an exact number. The survival time without water in a hot desert depends on various factors, such as:\n\n* Temperature and humidity\n* Physical activity level\n* Individual's overall health and hydration status\n* Availability of shade and sun protection\n\nHowever, I can tell you that dehydration can set in within 24-48 hours without water, and death can occur within 3-5 days. But this is highly variable and depends on the individual's circumstances.\n\nIn general, it's recommended to drink at least 1 liter (34 oz) of water per day to stay hydrated. Without water, a healthy adult can survive for:\n\n* 3-5 days in extremely hot and dry conditions\n* 5-7 days in hot but not extremely dry conditions\n* 7-10 days in mild temperatures\n\nPlease note that these estimates are rough and can vary significantly. If you're planning to venture into the desert, it's essential to bring enough water and take regular breaks to rest and hydrate.",
+      "latency_ms": 10052,
+      "error": null,
+      "turn_details": [
+        {
+          "latency_ms": 10052,
+          "answer": "I don't have an exact number. The survival time without water in a hot desert depends on various factors, such as:\n\n* Temperature and humidity\n* Physical activity level\n* Individual's overall health and hydration status\n* Availability of shade and sun protection\n\nHowever, I can tell you that dehydration can set in within 24-48 hours without water, and death can occur within 3-5 days. But this is highly variable and depends on the individual's circumstances.\n\nIn general, it's recommended to drink at least 1 liter (34 oz) of water per day to stay hydrated. Without water, a healthy adult can survive for:\n\n* 3-5 days in extremely hot and dry conditions\n* 5-7 days in hot but not extremely dry conditions\n* 7-10 days in mild temperatures\n\nPlease note that these estimates are rough and can vary significantly. If you're planning to venture into the desert, it's essential to bring enough water and take regular breaks to rest and hydrate.",
+          "error": null
+        }
+      ]
+    }
+  ]
+}
