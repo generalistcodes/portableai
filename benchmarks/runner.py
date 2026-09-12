@@ -14,6 +14,7 @@ from benchmarks.prompts import load_prompts, user_turns
 
 DEFAULT_BASE_URL = "http://localhost:11434"
 DEFAULT_TIMEOUT = 180
+DEFAULT_NUM_PREDICT = 512
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
 
@@ -46,7 +47,7 @@ def chat(
             "model": model,
             "messages": messages,
             "stream": False,
-            "options": {"temperature": 0},
+            "options": {"temperature": 0, "num_predict": DEFAULT_NUM_PREDICT},
         },
         timeout=timeout,
     )

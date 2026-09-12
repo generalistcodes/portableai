@@ -37,6 +37,7 @@ def test_chat_extracts_message_content_on_200(mock_post):
     assert kwargs["json"]["model"] == "llama3.2:3b"
     assert kwargs["json"]["stream"] is False
     assert kwargs["json"]["options"]["temperature"] == 0
+    assert kwargs["json"]["options"]["num_predict"] == 512
 
 
 @patch("benchmarks.runner.requests.post")
