@@ -14,6 +14,10 @@ searchable history — all running on your own machine, with nothing sent
 to the cloud. Pull, browse, and update models from one place, and pair
 your phone over your local network in seconds.
 
+The iPhone companion is developed in a **separate repo**
+(`portableai-ios`); this tree is the server/UI only. Clients should
+follow `docs/API_CONTRACT.md` for the live `/api/*` surface.
+
 This started as a tutorial on GGUF/Ollama and model personas — see
 **Example prompts to try** further down if you're here for that. The
 project lives at **portableai.app**. Note there's an existing, unrelated
@@ -96,6 +100,7 @@ docs/
   BENCHMARK_RESULTS.md           # last real run, with a recommendation
 demo.py                          # CLI: build a persona and chat with it
 data/                            # created at runtime: logs, settings, chats.db, ollama-bin/, ollama-models/
+# iOS app lives in sibling repo portableai-ios (not in this tree)
 ```
 
 ## The two ways to build a persona
