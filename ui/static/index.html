@@ -1,16 +1,26 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PortableAI</title>
-<link rel="icon" type="image/svg+xml" href="logo.svg?v=mountain-1">
-<link rel="stylesheet" href="style.css?v=mountain-wordmark-1">
 <script>
-  if (localStorage.getItem("portableai.sidebar-collapsed") === "1") {
-    document.documentElement.classList.add("sidebar-collapsed");
-  }
+  (function () {
+    try {
+      var theme = localStorage.getItem("portableai.theme");
+      if (theme === "dark" || theme === "light" || theme === "ube") {
+        document.documentElement.setAttribute("data-theme", theme);
+      }
+    } catch (e) {}
+    try {
+      if (localStorage.getItem("portableai.sidebar-collapsed") === "1") {
+        document.documentElement.classList.add("sidebar-collapsed");
+      }
+    } catch (e) {}
+  })();
 </script>
+<link rel="icon" type="image/png" href="logo.png?v=badge-1">
+<link rel="stylesheet" href="style.css?v=theme-1">
 </head>
 <body>
 <div class="app">
@@ -20,7 +30,7 @@
     <div class="sidebar-inner">
     <div class="sidebar-brand-row">
       <div class="sidebar-brand">
-        <img src="logo.svg?v=mountain-1" alt="" class="brand-icon" aria-hidden="true">
+        <img src="logo.png?v=badge-1" alt="" class="brand-icon" aria-hidden="true">
         <div class="brand-wordmark">
           <span class="brand-name">PORTABLE AI</span>
           <span class="brand-tagline">OFFLINE-FIRST</span>
@@ -118,7 +128,7 @@
 
       <div class="settings-nav-group">
         <div class="settings-nav-group-label">Options</div>
-        <button type="button" class="settings-nav-item active" data-pane="general" data-search="general ollama url personas startup">
+        <button type="button" class="settings-nav-item active" data-pane="general" data-search="general ollama url personas startup theme appearance dark light ube">
           <svg class="settings-nav-icon" viewBox="0 0 24 24" aria-hidden="true">
             <line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/>
             <line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/>
@@ -170,6 +180,17 @@
       </div>
       <div class="settings-main-body">
         <section id="pane-general" class="settings-pane">
+          <div class="setting-item">
+            <div class="setting-item-info">
+              <div class="setting-item-name">Theme</div>
+              <div class="setting-item-description">Appearance of the chat window. Saved on this device and applies immediately.</div>
+            </div>
+            <select id="themeSelect" class="setting-input" aria-label="Theme">
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+              <option value="ube">Ube</option>
+            </select>
+          </div>
           <div class="setting-item">
             <div class="setting-item-info">
               <div class="setting-item-name">Ollama base URL</div>
@@ -326,6 +347,6 @@
   </div>
 </div>
 
-<script src="app.js?v=new-chat-2"></script>
+<script src="app.js?v=theme-1"></script>
 </body>
 </html>

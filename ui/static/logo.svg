@@ -1,4 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 76 58" fill="#fff" role="img" aria-label="PortableAI">
-  <polygon points="74.75,56 46.25,2 33.89,25.08 41.88,40 17.35,56"/>
-  <polygon points="1.25,56 23.75,14 46.25,56"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="PortableAI">
+  <defs>
+    <linearGradient id="portableai-badge" x1="18%" y1="0%" x2="82%" y2="100%">
+      <stop offset="0%" stop-color="#b224aa"/>
+      <stop offset="100%" stop-color="#7a1975"/>
+    </linearGradient>
+  </defs>
+  <circle cx="32" cy="32" r="32" fill="url(#portableai-badge)"/>
+  <g fill="#fff" transform="translate(11.2,12.2) scale(0.547)">
+    <polygon points="74.75,56 46.25,2 33.89,25.08 41.88,40 17.35,56"/>
+    <polygon points="1.25,56 23.75,14 46.25,56"/>
+  </g>
 </svg>

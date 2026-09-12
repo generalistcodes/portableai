@@ -1,11 +1,11 @@
 """
 Cross-platform launcher for the persona chat UI.
 
-Run this instead of `python ui/server.py` directly when you're not sure
-the target machine already has dependencies installed -- it checks for
-Flask/requests and installs them via pip if missing, then starts the
-server. Works identically on Windows, macOS, and Linux: no shell scripts,
-no OS-specific activation commands:
+This is the only supported way to start PortableAI. `python ui/server.py`
+refuses to start: that would skip the bundled Ollama on Linux. This
+launcher checks for Flask/requests and installs them via pip if missing,
+then starts the server. Works identically on Windows, macOS, and Linux:
+no shell scripts, no OS-specific activation commands:
 
     python run.py              # start (replaces our leftover on 5050)
     python run.py --restart    # stop ours on 5050, then start
@@ -13,13 +13,16 @@ no OS-specific activation commands:
 
 (`python3 run.py` on systems where "python" still means Python 2.)
 
-This does NOT touch Ollama itself -- that's a separate install per
-machine (see https://ollama.com/download). This script only handles the
-Python side of this repo.
+On Linux this also vendors a pinned standalone Ollama into data/ollama-bin/
+(downloaded on first run) and launches `ollama serve` as a subprocess with
+models stored in data/ollama-models/. macOS and Windows still need a
+separate Ollama install (see https://ollama.com/download).
 """
 from __future__ import annotations
 
 import argparse
+import atexit
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -48,7 +51,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Start, restart, or stop the PortableAI chat UI on port 5050. "
         "Only a leftover instance of this app (python run.py / ui/server.py) is ever stopped; "
-        "other programs on that port are left alone."
+        "other programs on that port are left alone. On Linux, also starts a bundled Ollama."
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
@@ -60,6 +63,17 @@ def main() -> None:
         "--stop",
         action="store_true",
         help="Stop a leftover instance of this app on port 5050 and exit (do not start).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=5050,
+        help="Port for the chat UI (default 5050).",
+    )
+    parser.add_argument(
+        "--ollama-host",
+        default="127.0.0.1:11434",
+        help="Host:port for bundled Ollama on Linux (default 127.0.0.1:11434).",
     )
     args = parser.parse_args()
 
@@ -82,13 +96,57 @@ def main() -> None:
     spec.loader.exec_module(server)
 
     if args.stop:
-        server.stop_our_server(5050)
+        server.stop_our_server(args.port)
         return
 
-    server.ensure_port_available(5050)
-    # All interfaces, not localhost — phones on the same LAN must be able
-    # to connect. --stop/--restart still find this process via port 5050.
-    server.run_app(5050)
+    sys.path.insert(0, str(ROOT / "src"))
+    from ollama_runtime import (  # noqa: E402
+        OllamaRuntimeError,
+        ensure_and_start,
+        supported_on_this_os,
+    )
+
+    server.ensure_port_available(args.port)
+
+    runtime = None
+
+    def _stop_runtime() -> None:
+        nonlocal runtime
+        if runtime is None:
+            return
+        runtime.stop()
+        runtime = None
+        server.set_managed_ollama_base_url(None)
+
+    atexit.register(_stop_runtime)
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def _on_sigterm(signum, frame):
+        _stop_runtime()
+        if callable(previous_sigterm):
+            previous_sigterm(signum, frame)
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, _on_sigterm)
+
+    try:
+        if supported_on_this_os():
+            try:
+                runtime = ensure_and_start(ROOT / "data", host=args.ollama_host)
+            except OllamaRuntimeError as exc:
+                print(f"Failed to start bundled Ollama: {exc}", file=sys.stderr)
+                sys.exit(1)
+            server.set_managed_ollama_base_url(runtime.base_url)
+        else:
+            print(
+                "Note: PortableAI does not bundle Ollama on this OS yet (Linux only). "
+                "Install Ollama separately: https://ollama.com/download"
+            )
+        server.run_app(args.port)
+    except KeyboardInterrupt:
+        print("\nShutting down.")
+    finally:
+        _stop_runtime()
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -27,6 +28,7 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(server_module, "DB_FILE", tmp_path / "chats.db")
     monkeypatch.setattr(server_module, "PAIRING_FILE", tmp_path / "pairing.json")
     server_module._built_personas.clear()
+    server_module.set_managed_ollama_base_url(None)
     server_module.app.config.update(TESTING=True)
     return server_module
 
@@ -42,10 +44,37 @@ def test_index_serves_html(client):
     assert b"PortableAI" in resp.data
 
 
+def test_index_includes_theme_switcher(client):
+    html = client.get("/").data
+    assert b'data-theme="dark"' in html
+    assert b"portableai.theme" in html
+    assert b'id="themeSelect"' in html
+    assert b'value="dark"' in html
+    assert b'value="light"' in html
+    assert b'value="ube"' in html
+
+
+def test_style_defines_named_themes(client):
+    resp = client.get("/style.css")
+    assert resp.status_code == 200
+    css = resp.data
+    assert b'[data-theme="dark"]' in css
+    assert b'[data-theme="light"]' in css
+    assert b'[data-theme="ube"]' in css
+    assert b"--bg-main: #141218" in css
+
+
 def test_logo_svg_is_served(client):
     resp = client.get("/logo.svg")
     assert resp.status_code == 200
     assert b"<svg" in resp.data
+    assert b"portableai-badge" in resp.data
+
+
+def test_logo_png_is_served(client):
+    resp = client.get("/logo.png")
+    assert resp.status_code == 200
+    assert resp.data[:8] == b"\x89PNG\r\n\x1a\n"
 
 
 def test_api_personas_lists_bundled_personas(client):
@@ -248,7 +277,7 @@ def test_chat_with_model_override_builds_named_variant(mock_cls, client):
 
 
 @patch("server.OllamaClient")
-def test_api_models_formats_size_and_reports_path(mock_cls, client):
+def test_api_models_formats_size_and_reports_path(mock_cls, client, app):
     instance = mock_cls.return_value
     instance.is_available.return_value = True
     instance.list_models.return_value = [
@@ -264,7 +293,26 @@ def test_api_models_formats_size_and_reports_path(mock_cls, client):
     assert data["models"][0]["name"] == "llama3.2:3b"
     assert data["models"][0]["size_human"] == "2.0 GB"
     assert data["models"][0]["quantization"] == "Q4_K_M"
-    assert "models_path_hint" in data and data["models_path_hint"]
+    hint = data["models_path_hint"]
+    assert hint
+    if sys.platform.startswith("linux"):
+        assert hint == str((app.DATA_DIR / "ollama-models").resolve())
+        assert " or " not in hint
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="bundled models path is Linux-only")
+def test_models_path_hint_is_portableai_data_dir_on_linux(app):
+    hint = app._models_path_hint()
+    assert hint == str((app.DATA_DIR / "ollama-models").resolve())
+    assert " or " not in hint
+    assert "/usr/share/ollama" not in hint
+
+
+def test_managed_ollama_base_url_overrides_settings(app):
+    app.set_managed_ollama_base_url("http://127.0.0.1:11435")
+    assert app._client().base_url == "http://127.0.0.1:11435"
+    app.set_managed_ollama_base_url(None)
+    assert app._client().base_url == app.DEFAULT_SETTINGS["base_url"]
 
 
 @patch("server.OllamaClient")
@@ -1275,3 +1323,35 @@ def test_updates_check_handles_unreachable_url(mock_get, client):
     resp = client.get("/api/updates/check")
     data = resp.get_json()
     assert data == {"enabled": True, "reachable": False}
+
+
+# ---------- Direct ui/server.py launch is refused ----------
+
+
+def test_refuse_direct_launch_exits_pointing_at_run_py(app, capsys):
+    with pytest.raises(SystemExit) as exc:
+        app.refuse_direct_launch()
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "python run.py" in err
+    assert "ui/server.py" in err
+    assert "bundled Ollama" in err
+    assert "Do not start" in err
+
+
+def test_ui_server_py_main_exits_without_starting_flask():
+    """Real `__main__` path: `python ui/server.py` must refuse, not bind Flask."""
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "ui" / "server.py")],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    combined = result.stderr + result.stdout
+    assert result.returncode == 1
+    assert "python run.py" in combined
+    assert "ui/server.py" in combined
+    assert "bundled Ollama" in combined
+    assert "Running on" not in combined
+    assert "Serving Flask" not in combined

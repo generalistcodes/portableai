@@ -7,8 +7,8 @@ Minimal backend for the persona chat UI.
   optionally on a different base model (model_override) than the one in
   its .Modelfile -- built as a separate named variant so the original
   persona definition is never mutated.
-- Lists installed Ollama models and a best-effort hint at where they live
-  on disk, for the model selector / settings panel.
+- Lists installed Ollama models and where they live on disk (on Linux,
+  PortableAI's own data/ollama-models/; elsewhere a best-effort OS default).
 - Logs every request/reply to data/logs.jsonl (append-only, human-readable).
 - Persists a couple of settings (Ollama base URL, whether to auto-build
   personas on startup) to data/settings.json.
@@ -43,6 +43,7 @@ from ollama_client import (  # noqa: E402
     OllamaClient,
     OllamaError,
 )
+from ollama_runtime import models_dir  # noqa: E402
 from persona_loader import ModelfileParseError, humanize_persona_id, load_persona_file  # noqa: E402
 import conversation_store as store  # noqa: E402
 import pairing_store  # noqa: E402
@@ -89,6 +90,15 @@ def _ollama_error_message(exc: BaseException) -> str:
 # Tracks which persona/model-variant names we've already `create`d in this
 # process, so we don't re-POST /api/create on every single chat message.
 _built_personas: set[str] = set()
+
+# Set by run.py when it launches the bundled Linux Ollama subprocess, so
+# this process talks to that instance without rewriting settings.json.
+_managed_ollama_base_url: str | None = None
+
+
+def set_managed_ollama_base_url(url: str | None) -> None:
+    global _managed_ollama_base_url
+    _managed_ollama_base_url = url.rstrip("/") if url else None
 
 # Admin-only: these must never be reachable from the LAN, even with a
 # valid device token — only from the machine physically running the
@@ -402,7 +412,8 @@ def _save_settings(settings: dict) -> None:
 
 
 def _client() -> OllamaClient:
-    return OllamaClient(base_url=_load_settings()["base_url"])
+    base_url = _managed_ollama_base_url or _load_settings()["base_url"]
+    return OllamaClient(base_url=base_url)
 
 
 def _db() -> "sqlite3.Connection":
@@ -478,18 +489,19 @@ def _human_size(num_bytes) -> str | None:
 
 
 def _models_path_hint() -> str:
-    """Ollama doesn't expose its storage path over the API, so this is a
-    best-effort hint: the OLLAMA_MODELS env var if set, otherwise the
-    documented per-OS default location."""
-    import os
+    """Where this PortableAI instance stores GGUF blobs.
 
+    On Linux, run.py launches a bundled Ollama with OLLAMA_MODELS pointed
+    at data/ollama-models/, so the path is known and controlled. Other
+    OSes still guess from $OLLAMA_MODELS or the documented default.
+    """
+    if sys.platform.startswith("linux"):
+        return str(models_dir(DATA_DIR).resolve())
     env = os.environ.get("OLLAMA_MODELS")
     if env:
         return env
     if sys.platform == "darwin":
         return "~/.ollama/models"
-    if sys.platform.startswith("linux"):
-        return "/usr/share/ollama/.ollama/models (or ~/.ollama/models for non-service installs)"
     if sys.platform.startswith("win"):
         return r"%USERPROFILE%\.ollama\models"
     return "~/.ollama/models"
@@ -1204,26 +1216,23 @@ def run_app(port: int = PORT) -> None:
     app.run(host=BIND_HOST, port=port, debug=False)
 
 
+DIRECT_LAUNCH_MESSAGE = (
+    "Do not start PortableAI with `python ui/server.py`.\n"
+    "\n"
+    "That path starts Flask only and skips the bundled Ollama on Linux,\n"
+    "so the app is not self-contained.\n"
+    "\n"
+    "Use this instead:\n"
+    "\n"
+    "    python run.py\n"
+)
+
+
+def refuse_direct_launch() -> None:
+    """`python ui/server.py` is not a supported start path. Use `python run.py`."""
+    print(DIRECT_LAUNCH_MESSAGE, file=sys.stderr)
+    sys.exit(1)
+
+
 if __name__ == "__main__":
-    ensure_port_available(PORT)
-    _startup_check_chat_db()
-
-    settings = _load_settings()
-    if settings.get("auto_build_on_startup"):
-        client = _client()
-        if client.is_available():
-            for path in _persona_files():
-                name = _persona_name_from_path(path)
-                try:
-                    _ensure_persona_built(client, name)
-                    print(f"Built persona: {name}")
-                except (OllamaError, ModelfileParseError) as e:
-                    print(f"Skipped building {name}: {e}")
-        else:
-            print("Ollama not reachable at startup -- personas will build lazily on first chat.")
-
-    pin = pairing_store.generate_pin(PAIRING_FILE)
-    print_listen_info(PORT)
-    print(f"  Pairing PIN:      {pin}   (valid 5 minutes -- enter once in the app)")
-    print("  Regenerate anytime, and see the QR code, from Settings on the desktop UI.\n")
-    app.run(host=BIND_HOST, port=PORT, debug=False)
+    refuse_direct_launch()

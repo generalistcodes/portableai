@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="ui/static/logo.svg" width="72" height="72" alt="PortableAI logo">
+  <img src="ui/static/logo.png" width="72" height="72" alt="PortableAI logo">
   <h1>PortableAI</h1>
   <p><strong>Your own AI, fully local — chat from your browser or your phone, powered by models you control.</strong></p>
 </div>
@@ -28,17 +28,27 @@ tutorials skip — how to actually test it.
 
 ## Prerequisites
 
-- [Ollama](https://ollama.com) installed and running (`ollama serve`)
-- The base model pulled: `ollama pull llama3.2:3b`
 - Python 3.10+
+- **Linux:** nothing else. `python run.py` downloads a pinned standalone
+  Ollama into `data/ollama-bin/` on first run, starts it for you, and
+  stores models in `data/ollama-models/`. First run needs internet for
+  that download (~1.4GB on amd64 — the official archive includes CUDA
+  libs even though PortableAI does not wire GPU; you'll see a progress
+  message). After that it's local.
+- **macOS / Windows:** Ollama is not bundled yet — install it from
+  [ollama.com](https://ollama.com) and have `ollama serve` running.
+- A base model once the server is up — download one from Settings, or
+  (Linux) `data/ollama-bin/ollama pull llama3.2:3b` against the bundled
+  instance. A system `ollama` CLI talks to the system install, not
+  PortableAI's copy.
 
 ```bash
 pip install -r requirements.txt
 ```
 
 Or, for a setup that works the same way regardless of OS: `python run.py`
-(see **Portability across OSes** below — it installs dependencies for you
-and starts the chat UI in one step).
+(see **Portability across OSes** below — it installs Python dependencies
+for you, and on Linux also vendors Ollama, then starts the chat UI).
 
 ## What's in here
 
@@ -50,6 +60,7 @@ personas/
 src/
   persona_loader.py              # parses a Modelfile into a structured Persona
   ollama_client.py               # thin wrapper over Ollama's REST API
+  ollama_runtime.py              # Linux: download/pin/run a bundled Ollama subprocess
 ui/
   server.py                      # Flask backend: proxies to Ollama, logs, settings, chat history
   model_catalog.json             # curated list of downloadable models shown in Settings
@@ -57,11 +68,12 @@ ui/
 tests/
   test_persona_loader.py         # unit tests, no network, no Ollama needed
   test_ollama_client.py          # unit tests, requests fully mocked
+  test_ollama_runtime.py         # unit tests for vendored Ollama download/lifecycle, fully mocked
   test_conversation_store.py     # unit tests for chat history, pure sqlite
   test_server.py                 # unit tests for the UI backend, Ollama mocked
   test_integration_persona.py    # real Ollama + real model, skips if unavailable
 demo.py                          # CLI: build a persona and chat with it
-data/                            # created at runtime: logs.jsonl, settings.json, chats.db
+data/                            # created at runtime: logs, settings, chats.db, ollama-bin/, ollama-models/
 ```
 
 ## The two ways to build a persona
@@ -92,12 +104,13 @@ Fast unit tests (no Ollama required — this is what CI would run):
 pytest
 ```
 
-This runs 177 tests covering: Modelfile parsing edge cases (missing `FROM`,
+This runs 194 tests covering: Modelfile parsing edge cases (missing `FROM`,
 unterminated triple-quoted `SYSTEM` blocks, malformed `PARAMETER` lines,
 numeric casting), the Ollama client's request/response handling with
-`requests` fully mocked, the Flask UI backend (pairing, auth, chat history,
-logs, catalog), and SQLite conversation storage — no network, no GPU, no
-waiting on inference.
+`requests` fully mocked, Linux Ollama vendoring (download URL, version pin,
+child `OLLAMA_MODELS`) with download/subprocess mocked, the Flask UI backend
+(pairing, auth, chat history, logs, catalog), and SQLite conversation
+storage — no network, no GPU, no waiting on inference.
 
 Integration tests (spins up the real personas against a real, running
 Ollama):
@@ -157,11 +170,14 @@ A small self-hosted, dark-mode chat UI sits on top of the same
 just proxies to Ollama and adds logging + settings.
 
 ```bash
-python run.py              # start (replaces a leftover instance of this app on 5050)
+python run.py              # the only supported start path (Linux: vendors + starts Ollama; replaces leftover UI on 5050)
 python run.py --restart    # stop ours on 5050, then start
 python run.py --stop       # stop ours on 5050 and exit
-python ui/server.py        # same server, without the run.py launcher
 ```
+
+Do **not** run `python ui/server.py` — that is not a supported launch path.
+It exits immediately and tells you to use `python run.py`, which is the
+command that vendors and starts the bundled Ollama on Linux.
 
 Then open **http://localhost:5050**. Other programs on port 5050 are never killed. You get:
 
@@ -185,17 +201,19 @@ Then open **http://localhost:5050**. Other programs on port 5050 are never kille
   without touching the original `.Modelfile`. Useful for comparing how a
   persona holds up on a smaller/larger base model.
 - **Installed models + storage path** (in Settings) — lists every pulled
-  model with its parameter size, quantization, and disk size, plus a
-  best-effort path to where Ollama stores them (Ollama doesn't expose
-  this over its API, so it's read from `$OLLAMA_MODELS` if set, otherwise
-  the documented per-OS default).
+  model with its parameter size, quantization, and disk size, plus the
+  storage path. On Linux this is PortableAI's own `data/ollama-models/`
+  (the bundled Ollama is launched with `OLLAMA_MODELS` set there). On
+  macOS/Windows it is still a best-effort guess (`$OLLAMA_MODELS` or the
+  documented per-OS default) until those platforms are bundled too.
 
 Assistant replies are rendered as markdown (headers, code blocks, lists,
 bold/italic, links) using a small hand-rolled renderer in `app.js` rather
 than pulling `marked.js`/`DOMPurify` from a CDN — kept dependency-free on
 purpose so this stays consistent with the offline-first USBMind/Portable
-Ark philosophy: nothing here should require internet access beyond
-talking to your own local Ollama.
+Ark philosophy: once Ollama is present (bundled on Linux after the first
+download, or installed separately on other OSes), chatting does not
+require internet.
 
 It's a single Flask process (`ui/server.py`) serving static HTML/CSS/JS
 with no build step — same philosophy as USBMind's minimal chat UI:
@@ -244,12 +262,13 @@ what carries over cleanly and what doesn't:
 - `personas/*.Modelfile` — plain text, no OS-specific content
 - `data/chats.db` — SQLite's file format is identical across Windows/macOS/Linux; copy it to a new machine's `data/` folder and your chat history is back
 - `data/settings.json`, `data/logs.jsonl` — plain JSON/JSON-lines
+- `data/ollama-bin/` and `data/ollama-models/` — on Linux, the vendored Ollama binary and the models it pulled. Copy the whole folder to another **Linux machine of the same architecture** and you do not need a separate Ollama install. A first run on a machine that is missing `data/ollama-bin/ollama` will download the pinned binary again.
 - All the Python source — no hardcoded path separators anywhere (everything uses `pathlib.Path`, which normalizes for the current OS automatically), no hardcoded absolute paths, no OS-specific assumptions
 
 **Does NOT carry over — needs a fresh setup per machine:**
 - `venv/` (or any virtualenv folder) — a Python virtual environment is tied to the exact OS and Python build it was created with; copying one from Linux and running it on Windows will not work. Don't zip/copy this folder.
-- **Ollama itself** — separate install per OS, from [ollama.com/download](https://ollama.com/download). This repo talks to it over HTTP; it doesn't bundle Ollama.
-- Pulled models (`llama3.2:3b` etc.) — these live inside Ollama's own storage, not in this repo. Run `ollama pull llama3.2:3b` again on the new machine.
+- **Ollama on macOS and Windows** — not bundled yet. Separate install per OS, from [ollama.com/download](https://ollama.com/download). Those platforms still talk to Ollama over HTTP the old way.
+- GPU / CUDA / ROCm — the Linux vendored binary is **CPU-only for now**. PortableAI does not run the official installer's GPU detection, and it does not download CUDA or ROCm extras. If you have a GPU and care about it, install Ollama yourself from ollama.com (which *does* wire up GPU support) rather than assuming this bundled copy will use it. That is a deliberate trade-off for "one folder, one command", not a silent performance regression we hope you won't notice.
 
 **Easiest way to run it on a new machine:**
 
@@ -257,13 +276,9 @@ what carries over cleanly and what doesn't:
 python run.py
 ```
 
-`run.py` works identically on Windows, macOS, and Linux — it checks
-whether Flask/requests are installed, installs them via pip if not
-(needs internet for that one-time step, same as installing Ollama
-itself), then starts the server on `http://localhost:5050`. Use
-`python run.py --restart` to stop ours then start, or `python run.py --stop`
-to stop without starting. No shell scripts, no `venv\Scripts\activate`
-vs `source venv/bin/activate` differences to remember.
+`run.py` works the same way on Windows, macOS, and Linux for the Python side — it checks whether Flask/requests are installed, installs them via pip if not (needs internet for that one-time step), then starts the server on `http://localhost:5050`. On **Linux** it also downloads a pinned Ollama `v0.34.0` standalone archive from GitHub into `data/ollama-bin/` the first time, launches `ollama serve` as a subprocess with `OLLAMA_MODELS` pointed at `data/ollama-models/`, and stops that subprocess when you Ctrl+C. If a system-wide `ollama` is already on PATH, it prints a clear notice that PortableAI is using the bundled copy instead — it does not silently reuse the system install.
+
+Use `python run.py --restart` to stop ours then start, or `python run.py --stop` to stop without starting. No shell scripts, no `venv\Scripts\activate` vs `source venv/bin/activate` differences to remember.
 
 If you'd rather manage a virtualenv yourself: `python -m venv venv` on
 all three OSes, then `venv\Scripts\activate` (Windows) or `source

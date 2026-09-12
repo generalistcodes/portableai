@@ -408,6 +408,36 @@ el("modelSelect").addEventListener("change", (e) => {
   loadConversations();
 });
 
+const THEME_KEY = "portableai.theme";
+const THEMES = ["dark", "light", "ube"];
+
+function normalizeTheme(value) {
+  return THEMES.includes(value) ? value : "dark";
+}
+
+function readStoredTheme() {
+  try {
+    return normalizeTheme(localStorage.getItem(THEME_KEY));
+  } catch {
+    return "dark";
+  }
+}
+
+function applyTheme(theme) {
+  const next = normalizeTheme(theme);
+  document.documentElement.setAttribute("data-theme", next);
+  try {
+    localStorage.setItem(THEME_KEY, next);
+  } catch {
+    // private mode
+  }
+  const select = el("themeSelect");
+  if (select && select.value !== next) select.value = next;
+}
+
+applyTheme(readStoredTheme());
+el("themeSelect").addEventListener("change", (e) => applyTheme(e.target.value));
+
 const SIDEBAR_COLLAPSED_KEY = "portableai.sidebar-collapsed";
 
 function isMobileLayout() {
@@ -877,6 +907,7 @@ el("settingsBtn").addEventListener("click", async () => {
     alert(`Could not open settings: ${err.message}`);
     return;
   }
+  el("themeSelect").value = readStoredTheme();
   el("baseUrlInput").value = settings.base_url;
   el("autoBuildInput").checked = !!settings.auto_build_on_startup;
   el("updateUrlInput").value = settings.update_check_url || "";
