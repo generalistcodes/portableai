@@ -349,6 +349,27 @@ function personaLabelById(id) {
   return personaLabel(p) || id || "";
 }
 
+const PERSONA_ICON_SVGS = {
+  message: '<svg class="persona-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5z"/></svg>',
+  shield: '<svg class="persona-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+  person: '<svg class="persona-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+  lightbulb: '<svg class="persona-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/></svg>',
+};
+
+function personaIconKey(p) {
+  const raw = (p && p.icon ? String(p.icon) : "").toLowerCase().trim();
+  if (PERSONA_ICON_SVGS[raw]) return raw;
+  const hay = `${(p && p.id) || ""} ${(p && p.display_name) || ""}`.toLowerCase();
+  if (hay.includes("survival")) return "shield";
+  if (hay.includes("mentor")) return "person";
+  if (hay.includes("explain")) return "lightbulb";
+  return "message";
+}
+
+function personaIconSvg(p) {
+  return PERSONA_ICON_SVGS[personaIconKey(p)] || PERSONA_ICON_SVGS.message;
+}
+
 function pickDefaultPersona(personas) {
   const list = personas || [];
   return list.find((p) => p.is_default && p.id) || list.find((p) => p.id) || null;
@@ -522,7 +543,7 @@ async function loadPersonas() {
     btn.className = "persona-item" + (p.id === state.activePersona ? " active" : "");
     btn.dataset.personaId = p.id;
     btn.type = "button";
-    btn.innerHTML = `<span class="persona-name">${escapeHtml(personaLabel(p))}</span><span class="persona-model">${escapeHtml(p.base_model || "parse error")}</span>`;
+    btn.innerHTML = `${personaIconSvg(p)}<span class="persona-name">${escapeHtml(personaLabel(p))}</span>`;
     btn.onclick = () => selectPersona(p.id);
     list.appendChild(btn);
   });

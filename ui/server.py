@@ -553,6 +553,7 @@ def api_personas():
                     "id": name,
                     "display_name": persona.resolved_display_name(name),
                     "is_default": persona.is_default,
+                    "icon": persona.resolved_icon(),
                     "base_model": persona.base_model,
                     "system_preview": (persona.system or "")[:160],
                     "parameters": persona.parameters,
@@ -564,6 +565,7 @@ def api_personas():
                     "id": name,
                     "display_name": humanize_persona_id(name),
                     "is_default": False,
+                    "icon": "message",
                     "error": str(e),
                 }
             )

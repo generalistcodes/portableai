@@ -21,19 +21,19 @@ struct PersonaListView: View {
                 } else {
                     List(personas) { persona in
                         NavigationLink(value: persona) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(persona.displayName)
-                                    .font(.headline)
-                                if let model = persona.base_model {
-                                    Text(model)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                if let preview = persona.system_preview, !preview.isEmpty {
-                                    Text(preview)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(2)
+                            HStack(alignment: .top, spacing: 10) {
+                                Image(systemName: persona.systemImage)
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 22)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(persona.displayName)
+                                        .font(.headline)
+                                    if let preview = persona.system_preview, !preview.isEmpty {
+                                        Text(preview)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(2)
+                                    }
                                 }
                             }
                         }

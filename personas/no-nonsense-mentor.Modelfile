@@ -1,5 +1,6 @@
 FROM llama3.2:3b
 # display_name: Mentor
+# icon: person
 
 # Deterministic-ish so blog readers can reproduce roughly the same output
 PARAMETER temperature 0.2

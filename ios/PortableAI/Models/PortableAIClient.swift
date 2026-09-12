@@ -4,6 +4,7 @@ struct Persona: Decodable, Identifiable {
     let name: String
     let display_name: String?
     let is_default: Bool?
+    let icon: String?
     let base_model: String?
     let system_preview: String?
     var id: String { name }
@@ -15,9 +16,18 @@ struct Persona: Decodable, Identifiable {
 
     var isDefault: Bool { is_default ?? false }
 
+    var systemImage: String {
+        switch (icon ?? "").lowercased() {
+        case "shield": return "shield"
+        case "person": return "person"
+        case "lightbulb": return "lightbulb"
+        default: return "bubble.left"
+        }
+    }
+
     enum CodingKeys: String, CodingKey {
         case name = "id"
-        case display_name, is_default, base_model, system_preview
+        case display_name, is_default, icon, base_model, system_preview
     }
 }
 

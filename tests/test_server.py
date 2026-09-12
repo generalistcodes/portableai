@@ -82,20 +82,43 @@ def test_api_personas_lists_bundled_personas(client):
     assert resp.status_code == 200
     payload = resp.get_json()
     by_id = {p["id"]: p for p in payload}
-    assert {"assistant", "no-nonsense-mentor", "eli5-explainer"}.issubset(by_id)
+    assert {"assistant", "no-nonsense-mentor", "eli5-explainer", "survival-guide"}.issubset(by_id)
     assistant = by_id["assistant"]
     assert assistant["display_name"] == "Assistant"
     assert assistant["is_default"] is True
+    assert assistant["icon"] == "message"
+    assert assistant["base_model"] == "llama3.2:3b"
     assert by_id["no-nonsense-mentor"]["is_default"] is False
     assert by_id["eli5-explainer"]["is_default"] is False
     assert by_id["no-nonsense-mentor"]["display_name"] == "Mentor"
+    assert by_id["no-nonsense-mentor"]["icon"] == "person"
     assert by_id["eli5-explainer"]["display_name"] == "Explainer"
+    assert by_id["eli5-explainer"]["icon"] == "lightbulb"
+    assert by_id["survival-guide"]["display_name"] == "Survival Guide"
+    assert by_id["survival-guide"]["icon"] == "shield"
+    assert by_id["survival-guide"]["base_model"] == "llama3.2:3b"
     for p in payload:
         assert "display_name" in p
         assert "is_default" in p
+        assert "icon" in p
+        assert p["icon"] in {"message", "shield", "person", "lightbulb"}
+        assert "base_model" in p or "error" in p
     defaults = [p for p in payload if p.get("is_default")]
     assert len(defaults) == 1
     assert defaults[0]["id"] == "assistant"
+
+
+def test_persona_list_ui_hides_model_and_renders_icons(client):
+    js = client.get("/app.js").data.decode()
+    assert "persona-model" not in js
+    assert "personaIconSvg" in js
+    assert "PERSONA_ICON_SVGS" in js
+    assert "persona-icon" in js
+    assert "Persona default" in js
+    assert "persona.base_model" in js
+    css = client.get("/style.css").data.decode()
+    assert ".persona-icon" in css
+    assert ".persona-model" not in css
 
 
 def test_settings_roundtrip(client):

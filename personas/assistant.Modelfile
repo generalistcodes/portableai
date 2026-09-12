@@ -1,6 +1,7 @@
 FROM llama3.2:3b
 # display_name: Assistant
 # default: true
+# icon: message
 
 PARAMETER temperature 0.7
 

@@ -443,7 +443,7 @@ html, body {
 .plus { font-size: 16px; }
 
 .sidebar-section { overflow-y: auto; }
-.persona-section { flex-shrink: 0; max-height: 180px; }
+.persona-section { flex-shrink: 0; max-height: 260px; }
 
 .sidebar-divider {
   border-top: 1px solid var(--border);
@@ -559,9 +559,9 @@ html, body {
 
 .persona-item {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
   padding: 8px 10px;
   border-radius: var(--radius);
   cursor: pointer;
@@ -574,7 +574,21 @@ html, body {
 .persona-item:hover { background: var(--bg-hover); }
 .persona-item.active { background: var(--bg-active); }
 .persona-item .persona-name { font-size: 14px; }
-.persona-item .persona-model { font-size: 11px; color: var(--text-muted); }
+.persona-item .persona-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  color: var(--text-muted);
+}
+.persona-item:hover .persona-icon,
+.persona-item.active .persona-icon {
+  color: var(--text-primary);
+}
 
 .sidebar-footer {
   display: flex;

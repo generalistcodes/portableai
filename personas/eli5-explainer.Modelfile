@@ -1,5 +1,6 @@
 FROM llama3.2:3b
 # display_name: Explainer
+# icon: lightbulb
 
 PARAMETER temperature 0.6
 PARAMETER top_p 0.95

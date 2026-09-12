@@ -4,7 +4,8 @@ Parse an Ollama Modelfile into a structured dict.
 This is intentionally a small, dependency-free parser rather than a full
 Modelfile grammar implementation. It supports the subset most tutorials
 actually use: FROM, SYSTEM (single-line or triple-quoted block), and
-PARAMETER lines. That's enough to build personas and to build the JSON
+PARAMETER lines, plus optional `# display_name` / `# default` / `# icon`
+comments for the UI. That's enough to build personas and to build the JSON
 payload Ollama's /api/create endpoint expects.
 """
 from __future__ import annotations
@@ -33,6 +34,30 @@ _NUMERIC_PARAMETERS = {
     "mirostat_tau": float,
 }
 
+# UI icon slugs accepted from `# icon: ...` comments. Unknown values are ignored
+# so a typo can't leak an unexpected class name into the frontend.
+KNOWN_ICONS = frozenset({"message", "shield", "person", "lightbulb"})
+_ICON_ALIASES = {
+    "chat": "message",
+    "chat-bubble": "message",
+    "message-circle": "message",
+    "bubble": "message",
+    "user": "person",
+    "bulb": "lightbulb",
+}
+DEFAULT_ICON = "message"
+
+
+def normalize_icon(value: str | None) -> str | None:
+    """Map a Modelfile icon token to a known slug, or None if unset/unknown."""
+    if not value:
+        return None
+    slug = value.strip().lower().replace("_", "-")
+    slug = _ICON_ALIASES.get(slug, slug)
+    if slug in KNOWN_ICONS:
+        return slug
+    return None
+
 
 def humanize_persona_id(persona_id: str) -> str:
     """Turn a filename slug like 'no-nonsense-mentor' into a UI label."""
@@ -46,11 +71,15 @@ class Persona:
     parameters: dict = field(default_factory=dict)
     display_name: str | None = None
     is_default: bool = False
+    icon: str | None = None
 
     def resolved_display_name(self, persona_id: str) -> str:
         if self.display_name:
             return self.display_name
         return humanize_persona_id(persona_id)
+
+    def resolved_icon(self) -> str:
+        return self.icon or DEFAULT_ICON
 
     def to_create_payload(self, name: str) -> dict:
         """Build the JSON body for POST /api/create (structured form)."""
@@ -73,6 +102,7 @@ def parse_modelfile(text: str) -> Persona:
     parameters: dict = {}
     display_name: str | None = None
     is_default = False
+    icon: str | None = None
 
     i = 0
     while i < len(lines):
@@ -84,11 +114,13 @@ def parse_modelfile(text: str) -> Persona:
             continue
 
         if line.startswith("#"):
-            meta_name, meta_default = _metadata_from_comment(line)
-            if meta_name is not None:
-                display_name = meta_name
-            if meta_default is not None:
-                is_default = meta_default
+            meta = _metadata_from_comment(line)
+            if "display_name" in meta:
+                display_name = meta["display_name"]
+            if "is_default" in meta:
+                is_default = meta["is_default"]
+            if "icon" in meta:
+                icon = meta["icon"]
             continue
 
         if line.upper().startswith("FROM "):
@@ -152,26 +184,31 @@ def parse_modelfile(text: str) -> Persona:
         parameters=parameters,
         display_name=display_name,
         is_default=is_default,
+        icon=icon,
     )
 
 
-def _metadata_from_comment(line: str) -> tuple[str | None, bool | None]:
-    """Read optional `# display_name: ...` / `# default: true` comments.
+def _metadata_from_comment(line: str) -> dict:
+    """Read optional `# display_name:` / `# default:` / `# icon:` comments.
 
-    Unknown comments are ignored. Returns (display_name, is_default), where
-    either value is None if that key wasn't on this line.
+    Comments are ignored by Ollama, so this is safe UI metadata. Unknown
+    comments and unknown icon slugs are ignored.
     """
     body = line[1:].strip()
     if ":" not in body:
-        return None, None
+        return {}
     key, _, value = body.partition(":")
     key = key.strip().lower()
     value = value.strip()
     if key == "display_name" and value:
-        return value, None
+        return {"display_name": value}
     if key == "default":
-        return None, value.lower() in ("true", "yes", "1")
-    return None, None
+        return {"is_default": value.lower() in ("true", "yes", "1")}
+    if key == "icon":
+        icon = normalize_icon(value)
+        if icon:
+            return {"icon": icon}
+    return {}
 
 
 def load_persona_file(path: str | Path) -> Persona:

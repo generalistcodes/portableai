@@ -10,6 +10,7 @@ from persona_loader import (
     Persona,
     humanize_persona_id,
     load_persona_file,
+    normalize_icon,
     parse_modelfile,
 )
 
@@ -112,10 +113,12 @@ def test_to_create_payload_omits_ui_metadata():
         parameters={"temperature": 0.2},
         display_name="Assistant",
         is_default=True,
+        icon="message",
     )
     payload = persona.to_create_payload("assistant")
     assert "display_name" not in payload
     assert "is_default" not in payload
+    assert "icon" not in payload
 
 
 def test_parses_display_name_and_default_from_comments():
@@ -131,10 +134,32 @@ def test_parses_display_name_and_default_from_comments():
     assert persona.parameters["temperature"] == pytest.approx(0.7)
 
 
+def test_parses_icon_from_comment():
+    text = "FROM llama3.2:3b\n# icon: shield\nPARAMETER temperature 0.4\n"
+    persona = parse_modelfile(text)
+    assert persona.icon == "shield"
+    assert persona.resolved_icon() == "shield"
+
+
+def test_icon_aliases_are_normalized():
+    assert normalize_icon("chat-bubble") == "message"
+    assert normalize_icon("user") == "person"
+    assert normalize_icon("bulb") == "lightbulb"
+    assert normalize_icon("not-an-icon") is None
+
+
+def test_unknown_icon_comment_is_ignored():
+    persona = parse_modelfile("FROM llama3.2:3b\n# icon: spaceship\n")
+    assert persona.icon is None
+    assert persona.resolved_icon() == "message"
+
+
 def test_missing_metadata_comments_are_not_default():
     persona = parse_modelfile("FROM llama3.2:3b\n# a comment\nPARAMETER temperature 0.5\n")
     assert persona.display_name is None
     assert persona.is_default is False
+    assert persona.icon is None
+    assert persona.resolved_icon() == "message"
 
 
 def test_humanize_persona_id():
@@ -151,6 +176,7 @@ def test_assistant_modelfile_is_the_default():
     persona = load_persona_file(PERSONAS_DIR / "assistant.Modelfile")
     assert persona.display_name == "Assistant"
     assert persona.is_default is True
+    assert persona.icon == "message"
     assert persona.parameters["temperature"] == pytest.approx(0.7)
     assert persona.system
     assert "no particular persona" in persona.system
@@ -161,11 +187,25 @@ def test_existing_bundled_personas_are_not_default():
         "no-nonsense-mentor.Modelfile",
         "eli5-explainer.Modelfile",
         "spanish-translator.Modelfile",
+        "survival-guide.Modelfile",
     ):
         persona = load_persona_file(PERSONAS_DIR / filename)
         assert persona.is_default is False
         assert persona.base_model == "llama3.2:3b"
         assert persona.system
+
+
+def test_bundled_persona_icons():
+    expected = {
+        "assistant.Modelfile": "message",
+        "no-nonsense-mentor.Modelfile": "person",
+        "eli5-explainer.Modelfile": "lightbulb",
+        "survival-guide.Modelfile": "shield",
+    }
+    for filename, icon in expected.items():
+        persona = load_persona_file(PERSONAS_DIR / filename)
+        assert persona.icon == icon
+        assert persona.resolved_icon() == icon
 
 
 def test_load_persona_file_missing_raises():
@@ -175,7 +215,12 @@ def test_load_persona_file_missing_raises():
 
 @pytest.mark.parametrize(
     "filename",
-    ["assistant.Modelfile", "no-nonsense-mentor.Modelfile", "eli5-explainer.Modelfile"],
+    [
+        "assistant.Modelfile",
+        "no-nonsense-mentor.Modelfile",
+        "eli5-explainer.Modelfile",
+        "survival-guide.Modelfile",
+    ],
 )
 def test_bundled_personas_parse_cleanly(filename):
     persona = load_persona_file(PERSONAS_DIR / filename)
