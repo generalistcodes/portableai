@@ -146,6 +146,7 @@ def test_pull_model_raises_when_status_reports_error(mock_post):
     client = OllamaClient()
     with pytest.raises(OllamaError, match="pull failed"):
         client.pull_model("does-not-exist:9000b")
+    assert mock_post.call_count == 1  # non-transient: do not retry
 
 
 @patch("ollama_client.requests.post")
@@ -155,3 +156,39 @@ def test_pull_model_respects_custom_timeout(mock_post):
     client.pull_model("qwen2.5:0.5b", timeout=60)
     _, kwargs = mock_post.call_args
     assert kwargs["timeout"] == 60
+
+
+@patch("ollama_client.time.sleep")
+@patch("ollama_client.requests.post")
+def test_pull_model_retries_connection_error_then_succeeds(mock_post, mock_sleep):
+    import requests
+
+    mock_post.side_effect = [
+        requests.ConnectionError("connection timed out"),
+        _mock_response(200, {"status": "success"}),
+    ]
+    statuses = []
+    client = OllamaClient()
+    client.pull_model(
+        "qwen2.5:0.5b",
+        on_status=lambda msg, **_kw: statuses.append(msg),
+    )
+
+    assert mock_post.call_count == 2
+    mock_sleep.assert_called_once_with(2)
+    assert statuses == ["Connection issue, retrying (2/3)..."]
+
+
+@patch("ollama_client.time.sleep")
+@patch("ollama_client.requests.post")
+def test_pull_model_gives_up_after_retries(mock_post, mock_sleep):
+    import requests
+
+    mock_post.side_effect = requests.ConnectionError("connection timed out")
+    client = OllamaClient()
+    with pytest.raises(OllamaError, match="connection"):
+        client.pull_model("qwen2.5:0.5b")
+    assert mock_post.call_count == 3
+    assert mock_sleep.call_count == 2
+    assert mock_sleep.call_args_list[0].args[0] == 2
+    assert mock_sleep.call_args_list[1].args[0] == 5

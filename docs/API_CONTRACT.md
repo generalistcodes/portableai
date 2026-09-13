@@ -333,13 +333,23 @@ invalid catalog file → `[]`.
 **Request:** `{"name": "llama3.2:3b"}` — `name` required after strip,
 else **400** `{"error": "name is required"}`.
 
-**Success (200):** `{"pulled": "llama3.2:3b"}`
-
 **503** `{"error": "Ollama is not reachable. Run \`ollama serve\`."}`
+(plain JSON; pull does not start)
 
-**502** `{"error": "<message>"}`
+Once the pull starts, **200** with `Content-Type: application/x-ndjson`:
+newline-delimited JSON events. Transient connection failures are retried
+a few times (3 attempts, backoff 2s/5s/10s); each retry emits a status
+line before sleeping.
 
-Blocks until the pull finishes. No progress events.
+| Event | Shape |
+| --- | --- |
+| retry (optional, 0+) | `{"status":"retrying","message":"Connection issue, retrying (2/3)...","attempt":2,"max_attempts":3}` |
+| success (final) | `{"pulled":"llama3.2:3b"}` |
+| failure (final) | `{"error":"<message>"}` |
+
+Clients should read the stream to the end and treat the last object as
+the result (check `pulled` vs `error`). There is no byte-level download
+progress — only retry status between full pull attempts.
 
 ### `POST /api/models/check-update`
 

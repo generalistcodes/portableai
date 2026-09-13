@@ -37,6 +37,11 @@ DARWIN_CLI_RELATIVE = Path("Ollama.app") / "Contents" / "Resources" / "ollama"
 DEFAULT_HOST = "127.0.0.1:11434"
 READY_TIMEOUT_SECONDS = 60.0
 
+# Same idea as ollama_client model-pull retries: a flaky CDN edge often
+# recovers after a short pause (and a fresh DNS lookup).
+FETCH_MAX_ATTEMPTS = 3
+FETCH_BACKOFF_SECONDS = (2, 5, 10)
+
 _ARCHIVE_BY_MACHINE_LINUX = {
     "x86_64": "ollama-linux-amd64.tar.zst",
     "amd64": "ollama-linux-amd64.tar.zst",
@@ -349,6 +354,26 @@ def ensure_and_start(
 
 
 def _fetch(url: str, dest: Path) -> None:
+    """Download ``url`` to ``dest``, retrying transient connection failures."""
+    last_error: BaseException | None = None
+    for attempt in range(1, FETCH_MAX_ATTEMPTS + 1):
+        try:
+            _fetch_once(url, dest)
+            return
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_error = exc
+            if attempt >= FETCH_MAX_ATTEMPTS:
+                break
+            print(
+                f"Connection issue, retrying ({attempt + 1}/{FETCH_MAX_ATTEMPTS})...",
+                flush=True,
+            )
+            time.sleep(FETCH_BACKOFF_SECONDS[attempt - 1])
+    assert last_error is not None
+    raise last_error
+
+
+def _fetch_once(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".partial")
     try:

@@ -292,3 +292,33 @@ def test_existing_pinned_version_does_not_print_download_banner(tmp_path, capsys
     ensure_binary(tmp_path, fetch=boom, extract=boom)
     out = capsys.readouterr().out
     assert "Downloading" not in out
+
+
+def test_fetch_retries_urlerror_then_succeeds(tmp_path, capsys):
+    import io
+    import urllib.error
+    from unittest.mock import MagicMock, patch
+
+    from ollama_runtime import _fetch
+
+    dest = tmp_path / "archive.tar.zst"
+    body = b"ollama-bytes"
+    ok_resp = MagicMock()
+    ok_resp.headers = {"Content-Length": str(len(body))}
+    ok_resp.read.side_effect = [body, b""]
+    ok_resp.__enter__ = lambda self: self
+    ok_resp.__exit__ = lambda *args: False
+
+    with (
+        patch("ollama_runtime.time.sleep") as mock_sleep,
+        patch(
+            "ollama_runtime.urllib.request.urlopen",
+            side_effect=[urllib.error.URLError("timed out"), ok_resp],
+        ) as mock_open,
+    ):
+        _fetch("https://example.test/ollama.tar.zst", dest)
+
+    assert dest.read_bytes() == body
+    assert mock_open.call_count == 2
+    mock_sleep.assert_called_once_with(2)
+    assert "Connection issue, retrying (2/3)..." in capsys.readouterr().out

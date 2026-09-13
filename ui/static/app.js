@@ -262,10 +262,48 @@ async function downloadModel(name, buttonEl) {
   buttonEl.disabled = true;
   buttonEl.textContent = "Downloading…";
   try {
-    await api("/api/models/pull", {
+    const headers = { "Content-Type": "application/json" };
+    if (deviceToken) headers.Authorization = `Bearer ${deviceToken}`;
+    const resp = await fetch("/api/models/pull", {
       method: "POST",
+      headers,
       body: JSON.stringify({ name }),
     });
+    // 400/503 (and auth failures) are still plain JSON.
+    const contentType = resp.headers.get("content-type") || "";
+    if (!contentType.includes("ndjson")) {
+      const data = await resp.json().catch(() => ({}));
+      if (resp.status === 401) {
+        setDeviceToken(null);
+        showPairingGate(data.error === "pairing required" ? "" : (data.error || ""));
+      }
+      throw new Error(data.error || `request failed: ${resp.status}`);
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let finalEvent = null;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const ev = JSON.parse(line);
+        if (ev.message) buttonEl.textContent = ev.message;
+        if (ev.pulled || ev.error) finalEvent = ev;
+      }
+    }
+    if (buf.trim()) {
+      const ev = JSON.parse(buf);
+      if (ev.message) buttonEl.textContent = ev.message;
+      if (ev.pulled || ev.error) finalEvent = ev;
+    }
+    if (!finalEvent || finalEvent.error) {
+      throw new Error((finalEvent && finalEvent.error) || "Download failed");
+    }
     await loadModels();
     await loadCatalog(); // re-render so this row now shows "Installed"
   } catch (err) {

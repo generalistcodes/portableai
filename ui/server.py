@@ -727,6 +727,13 @@ def api_models_catalog():
 
 @app.route("/api/models/pull", methods=["POST"])
 def api_models_pull():
+    """Pull a model; stream NDJSON so the UI can show retry messages mid-download.
+
+    Validation / reachability errors stay plain JSON (400/503). Once the
+    pull starts, the response is ``application/x-ndjson``: zero or more
+    ``{"status":"retrying","message":"..."}`` lines, then either
+    ``{"pulled":"<name>"}`` or ``{"error":"..."}``.
+    """
     body = request.get_json(force=True) or {}
     name = (body.get("name") or "").strip()
     if not name:
@@ -736,11 +743,14 @@ def api_models_pull():
     if not client.is_available():
         return jsonify({"error": "Ollama is not reachable. Run `ollama serve`."}), 503
 
-    try:
-        client.pull_model(name)
-    except _OLLAMA_CALL_ERRORS as e:
-        return jsonify({"error": _ollama_error_message(e)}), 502
-    return jsonify({"pulled": name})
+    def generate():
+        try:
+            for event in client.iter_pull_model(name):
+                yield json.dumps(event) + "\n"
+        except _OLLAMA_CALL_ERRORS as e:
+            yield json.dumps({"error": _ollama_error_message(e)}) + "\n"
+
+    return Response(generate(), mimetype="application/x-ndjson")
 
 
 @app.route("/api/models/check-update", methods=["POST"])

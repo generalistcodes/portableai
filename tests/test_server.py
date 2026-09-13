@@ -1310,11 +1310,16 @@ def test_pull_model_503_when_ollama_down(mock_cls, client):
     assert resp.status_code == 503
 
 
+def _ndjson_events(resp):
+    text = resp.get_data(as_text=True)
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
 @patch("server.OllamaClient")
 def test_pull_model_happy_path(mock_cls, client):
     instance = mock_cls.return_value
     instance.is_available.return_value = True
-    instance.pull_model.return_value = None
+    instance.iter_pull_model.return_value = iter([{"pulled": "qwen2.5:0.5b"}])
 
     resp = client.post(
         "/api/models/pull",
@@ -1322,8 +1327,38 @@ def test_pull_model_happy_path(mock_cls, client):
         content_type="application/json",
     )
     assert resp.status_code == 200
-    assert resp.get_json()["pulled"] == "qwen2.5:0.5b"
-    instance.pull_model.assert_called_once_with("qwen2.5:0.5b")
+    assert "ndjson" in (resp.content_type or "")
+    events = _ndjson_events(resp)
+    assert events[-1]["pulled"] == "qwen2.5:0.5b"
+    instance.iter_pull_model.assert_called_once_with("qwen2.5:0.5b")
+
+
+@patch("server.OllamaClient")
+def test_pull_model_streams_retry_status(mock_cls, client):
+    instance = mock_cls.return_value
+    instance.is_available.return_value = True
+    instance.iter_pull_model.return_value = iter(
+        [
+            {
+                "status": "retrying",
+                "message": "Connection issue, retrying (2/3)...",
+                "attempt": 2,
+                "max_attempts": 3,
+            },
+            {"pulled": "qwen2.5:0.5b"},
+        ]
+    )
+
+    resp = client.post(
+        "/api/models/pull",
+        data=json.dumps({"name": "qwen2.5:0.5b"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 200
+    events = _ndjson_events(resp)
+    assert events[0]["status"] == "retrying"
+    assert "2/3" in events[0]["message"]
+    assert events[-1]["pulled"] == "qwen2.5:0.5b"
 
 
 @patch("server.OllamaClient")
@@ -1332,15 +1367,16 @@ def test_pull_model_propagates_ollama_error(mock_cls, client):
 
     instance = mock_cls.return_value
     instance.is_available.return_value = True
-    instance.pull_model.side_effect = OllamaError("model not found")
+    instance.iter_pull_model.side_effect = OllamaError("model not found")
 
     resp = client.post(
         "/api/models/pull",
         data=json.dumps({"name": "not-a-real-model"}),
         content_type="application/json",
     )
-    assert resp.status_code == 502
-    assert "not found" in resp.get_json()["error"]
+    assert resp.status_code == 200
+    events = _ndjson_events(resp)
+    assert "not found" in events[-1]["error"]
 
 
 # ---------- Per-model update check (digest-diff via re-pull) ----------

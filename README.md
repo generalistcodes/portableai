@@ -367,15 +367,18 @@ automatically once it's installed. To add more entries to the curated
 list, just edit `ui/model_catalog.json` — it's a flat JSON array, no
 build step.
 
-Clicking "Download" calls `POST /api/models/pull`, which blocks until
-Ollama finishes downloading (large models can take several minutes) and
-shows "Downloading…" the whole time — there's no progress bar. Ollama's
-`/api/pull` does support a streaming mode with progress events; this
-repo intentionally uses the simpler non-streaming call to keep the
-`/api/models/pull` contract easy to test (see `test_pull_model_*` in
-`tests/test_server.py`, all mocked — no multi-GB downloads happen in CI).
-A progress bar is exactly the kind of thing that belongs in the
-streaming-replies work already listed under "What's still missing" below.
+Clicking "Download" calls `POST /api/models/pull`, which streams NDJSON
+until Ollama finishes (large models can take several minutes). The button
+shows "Downloading…", and if a transient connection failure hits (common
+against flaky CDN edges when fetching model blobs), PortableAI retries a
+few times and updates the button to messages like
+"Connection issue, retrying (2/3)…". There's still no byte-level progress
+bar — Ollama's `/api/pull` supports streaming progress events; this repo
+keeps `stream=False` per attempt and only surfaces retry status between
+attempts (see `test_pull_model_*` in `tests/test_server.py` /
+`tests/test_ollama_client.py`, all mocked — no multi-GB downloads in CI).
+A progress bar still belongs in the streaming-replies work listed under
+"What's still missing" below.
 
 ### Recommended models
 
