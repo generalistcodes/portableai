@@ -50,9 +50,17 @@ from ollama_client import (  # noqa: E402
     OllamaError,
 )
 from ollama_runtime import models_dir  # noqa: E402
-from persona_loader import ModelfileParseError, humanize_persona_id, load_persona_file  # noqa: E402
+from persona_loader import (  # noqa: E402
+    ModelfileParseError,
+    Persona,
+    humanize_persona_id,
+    load_persona_file,
+    write_default_flag,
+    write_modelfile,
+)
 import conversation_store as store  # noqa: E402
 import pairing_store  # noqa: E402
+import persona_cards  # noqa: E402
 
 PERSONAS_DIR = ROOT / "personas"
 DATA_DIR = data_dir()
@@ -127,6 +135,10 @@ def set_managed_ollama_base_url(url: str | None) -> None:
 # /api/theme is deliberately NOT admin-only: appearance has no security
 # implications (unlike base_url, logs, or model pull). Paired devices
 # share one server-side theme via requires-token, same as /api/personas.
+#
+# Persona writes (POST/PUT/DELETE /api/personas...) are admin-only: a
+# Modelfile is shared by every device. GET /api/personas stays
+# requires-token so phones can list personas and their cards.
 _ADMIN_ONLY_PATHS_PREFIX = "/api/pairing/devices"
 _ADMIN_ONLY_PATHS = {
     "/api/pairing/pin",
@@ -178,6 +190,13 @@ def _is_local_client(addr: str | None = None) -> bool:
     return _is_loopback_ip(ip)
 
 
+def _is_persona_write(path: str, method: str) -> bool:
+    """True for persona/card mutations. GET /api/personas stays public-to-token."""
+    if method == "GET":
+        return False
+    return path == "/api/personas" or path.startswith("/api/personas/")
+
+
 @app.before_request
 def _check_auth():
     path = request.path
@@ -186,7 +205,11 @@ def _check_auth():
 
     is_local = _is_local_client()
 
-    if path in _ADMIN_ONLY_PATHS or path.startswith(_ADMIN_ONLY_PATHS_PREFIX):
+    if (
+        path in _ADMIN_ONLY_PATHS
+        or path.startswith(_ADMIN_ONLY_PATHS_PREFIX)
+        or _is_persona_write(path, request.method)
+    ):
         if is_local:
             return None
         return jsonify({"error": "only available on the server machine itself"}), 403
@@ -567,6 +590,85 @@ def _persona_name_from_path(path: Path) -> str:
     return path.stem  # e.g. "no-nonsense-mentor"
 
 
+def _persona_modelfile(persona_id: str) -> Path:
+    return PERSONAS_DIR / f"{persona_id}.Modelfile"
+
+
+def _persona_ids() -> list[str]:
+    return [_persona_name_from_path(p) for p in _persona_files()]
+
+
+def _invalidate_built_persona(persona_id: str) -> None:
+    stale = {n for n in _built_personas if n == persona_id or n.startswith(f"{persona_id}--")}
+    _built_personas.difference_update(stale)
+
+
+def _installed_model_names() -> tuple[list[str] | None, tuple | None]:
+    """Return (names, error_response). error_response is (jsonify, status) on failure."""
+    client = _client()
+    if not client.is_available():
+        return None, (jsonify({"error": "Ollama is not reachable. Cannot validate base_model."}), 503)
+    try:
+        raw = client.list_models()
+    except _OLLAMA_CALL_ERRORS as e:
+        return None, (jsonify({"error": _ollama_error_message(e)}), 502)
+    names = []
+    for m in raw:
+        name = m.get("name") or m.get("model")
+        if name:
+            names.append(name)
+    return names, None
+
+
+def _require_installed_base_model(base_model: str):
+    names, err = _installed_model_names()
+    if err is not None:
+        return err
+    if not persona_cards.model_is_installed(base_model, names):
+        return jsonify({"error": f"base_model is not installed: {base_model}"}), 400
+    return None
+
+
+def _set_only_default(target_id: str) -> None:
+    for path in _persona_files():
+        write_default_flag(path, _persona_name_from_path(path) == target_id)
+
+
+def _promote_another_default(excluding_id: str) -> str | None:
+    remaining = [pid for pid in _persona_ids() if pid != excluding_id]
+    if not remaining:
+        return None
+    _set_only_default(remaining[0])
+    return remaining[0]
+
+
+def _persona_payload(path: Path) -> dict:
+    name = _persona_name_from_path(path)
+    cards = persona_cards.load_cards(PERSONAS_DIR, name)
+    try:
+        persona = load_persona_file(path)
+        return {
+            "id": name,
+            "display_name": persona.resolved_display_name(name),
+            "is_default": persona.is_default,
+            "icon": persona.resolved_icon(),
+            "base_model": persona.base_model,
+            "system_prompt": persona.system or "",
+            "system_preview": (persona.system or "")[:160],
+            "parameters": persona.parameters,
+            "cards": cards,
+        }
+    except ModelfileParseError as e:
+        return {
+            "id": name,
+            "display_name": humanize_persona_id(name),
+            "is_default": False,
+            "icon": "message",
+            "error": str(e),
+            "cards": cards,
+        }
+
+
 def _slug(name: str) -> str:
     """Turn an Ollama model tag like 'qwen2.5:0.5b' into a safe suffix for
     a derived model name, e.g. 'qwen2.5-0.5b'."""
@@ -636,35 +738,180 @@ def static_files(filename):
     return send_from_directory(STATIC_DIR, filename)
 
 
-@app.route("/api/personas")
+@app.route("/api/personas", methods=["GET"])
 def api_personas():
-    personas = []
-    for path in _persona_files():
-        name = _persona_name_from_path(path)
-        try:
-            persona = load_persona_file(path)
-            personas.append(
-                {
-                    "id": name,
-                    "display_name": persona.resolved_display_name(name),
-                    "is_default": persona.is_default,
-                    "icon": persona.resolved_icon(),
-                    "base_model": persona.base_model,
-                    "system_preview": (persona.system or "")[:160],
-                    "parameters": persona.parameters,
-                }
-            )
-        except ModelfileParseError as e:
-            personas.append(
-                {
-                    "id": name,
-                    "display_name": humanize_persona_id(name),
-                    "is_default": False,
-                    "icon": "message",
-                    "error": str(e),
-                }
-            )
-    return jsonify(personas)
+    return jsonify([_persona_payload(path) for path in _persona_files()])
+
+
+@app.route("/api/personas", methods=["POST"])
+def api_create_persona():
+    body = request.get_json(force=True) or {}
+    try:
+        display_name = persona_cards.validate_display_name(body.get("display_name"))
+        system_prompt = persona_cards.validate_system_prompt(body.get("system_prompt"))
+        base_model = persona_cards.validate_base_model_name(body.get("base_model"))
+        cards = persona_cards.normalize_cards(body.get("cards"), allow_verified_true=False)
+    except persona_cards.PersonaValidationError as e:
+        return jsonify({"error": str(e)}), 400
+
+    installed_err = _require_installed_base_model(base_model)
+    if installed_err is not None:
+        return installed_err
+
+    persona_id = persona_cards.unique_slug(display_name, set(_persona_ids()))
+    existing = _persona_files()
+    want_default = bool(body.get("is_default")) or not existing
+
+    persona = Persona(
+        base_model=base_model,
+        system=system_prompt,
+        display_name=display_name,
+        is_default=want_default,
+        icon="message",
+    )
+    write_modelfile(_persona_modelfile(persona_id), persona)
+    if want_default:
+        _set_only_default(persona_id)
+    if cards:
+        persona_cards.save_cards(PERSONAS_DIR, persona_id, cards)
+    return jsonify(_persona_payload(_persona_modelfile(persona_id))), 201
+
+
+@app.route("/api/personas/<persona_id>", methods=["PUT"])
+def api_update_persona(persona_id):
+    path = _persona_modelfile(persona_id)
+    if not path.exists():
+        return jsonify({"error": "persona not found"}), 404
+    try:
+        persona = load_persona_file(path)
+    except ModelfileParseError as e:
+        return jsonify({"error": str(e)}), 400
+
+    body = request.get_json(force=True) or {}
+    try:
+        if "display_name" in body:
+            persona.display_name = persona_cards.validate_display_name(body.get("display_name"))
+        if "system_prompt" in body:
+            persona.system = persona_cards.validate_system_prompt(body.get("system_prompt"))
+        if "base_model" in body:
+            persona.base_model = persona_cards.validate_base_model_name(body.get("base_model"))
+            installed_err = _require_installed_base_model(persona.base_model)
+            if installed_err is not None:
+                return installed_err
+    except persona_cards.PersonaValidationError as e:
+        return jsonify({"error": str(e)}), 400
+
+    becoming_default = bool(body["is_default"]) if "is_default" in body else persona.is_default
+    if "is_default" in body and not becoming_default and persona.is_default:
+        others = [pid for pid in _persona_ids() if pid != persona_id]
+        if not others:
+            return jsonify({"error": "cannot unset the only default persona"}), 400
+        persona.is_default = False
+        write_modelfile(path, persona)
+        _set_only_default(others[0])
+        _invalidate_built_persona(persona_id)
+        return jsonify(_persona_payload(path))
+
+    persona.is_default = becoming_default
+    write_modelfile(path, persona)
+    if becoming_default:
+        _set_only_default(persona_id)
+    _invalidate_built_persona(persona_id)
+    return jsonify(_persona_payload(path))
+
+
+@app.route("/api/personas/<persona_id>", methods=["DELETE"])
+def api_delete_persona(persona_id):
+    path = _persona_modelfile(persona_id)
+    if not path.exists():
+        return jsonify({"error": "persona not found"}), 404
+    ids = _persona_ids()
+    if len(ids) <= 1:
+        return jsonify({"error": "cannot delete the only remaining persona"}), 400
+    try:
+        persona = load_persona_file(path)
+        was_default = persona.is_default
+    except ModelfileParseError:
+        was_default = False
+    if was_default:
+        promoted = _promote_another_default(persona_id)
+        if promoted is None:
+            return jsonify({"error": "cannot delete the only default persona"}), 400
+    path.unlink()
+    persona_cards.delete_cards_file(PERSONAS_DIR, persona_id)
+    _invalidate_built_persona(persona_id)
+    return jsonify({"deleted": True, "id": persona_id})
+
+
+@app.route("/api/personas/<persona_id>/cards", methods=["POST"])
+def api_add_persona_card(persona_id):
+    if not _persona_modelfile(persona_id).exists():
+        return jsonify({"error": "persona not found"}), 404
+    body = request.get_json(force=True) or {}
+    cards = persona_cards.load_cards(PERSONAS_DIR, persona_id)
+    taken = {c["id"] for c in cards}
+    try:
+        card = persona_cards.normalize_card(
+            body, allow_verified_true=False, taken_ids=taken
+        )
+    except persona_cards.PersonaValidationError as e:
+        return jsonify({"error": str(e)}), 400
+    cards.append(card)
+    persona_cards.save_cards(PERSONAS_DIR, persona_id, cards)
+    return jsonify(card), 201
+
+
+@app.route("/api/personas/<persona_id>/cards/<card_id>", methods=["PUT"])
+def api_update_persona_card(persona_id, card_id):
+    if not _persona_modelfile(persona_id).exists():
+        return jsonify({"error": "persona not found"}), 404
+    cards = persona_cards.load_cards(PERSONAS_DIR, persona_id)
+    existing = persona_cards.find_card(cards, card_id)
+    if existing is None:
+        return jsonify({"error": "card not found"}), 404
+    body = request.get_json(force=True) or {}
+    merged = dict(existing)
+    if "title" in body:
+        merged["title"] = body.get("title")
+    if "answer" in body:
+        merged["answer"] = body.get("answer")
+    content_changed = (
+        ("title" in body and body.get("title") != existing["title"])
+        or ("answer" in body and body.get("answer") != existing["answer"])
+    )
+    if "verified" in body:
+        merged["verified"] = body.get("verified")
+        merged["verified_by"] = body.get("verified_by")
+        merged["verified_source"] = body.get("verified_source")
+    elif content_changed:
+        # Edited text is no longer the reviewed version.
+        merged["verified"] = False
+        merged["verified_by"] = None
+        merged["verified_source"] = None
+    taken = {c["id"] for c in cards if c["id"] != card_id}
+    try:
+        updated = persona_cards.normalize_card(
+            merged, allow_verified_true=True, taken_ids=taken
+        )
+    except persona_cards.PersonaValidationError as e:
+        return jsonify({"error": str(e)}), 400
+    # Keep the original id unless the client sent a new one (we don't expose that).
+    updated["id"] = card_id
+    cards = [updated if c["id"] == card_id else c for c in cards]
+    persona_cards.save_cards(PERSONAS_DIR, persona_id, cards)
+    return jsonify(updated)
+
+
+@app.route("/api/personas/<persona_id>/cards/<card_id>", methods=["DELETE"])
+def api_delete_persona_card(persona_id, card_id):
+    if not _persona_modelfile(persona_id).exists():
+        return jsonify({"error": "persona not found"}), 404
+    cards = persona_cards.load_cards(PERSONAS_DIR, persona_id)
+    if persona_cards.find_card(cards, card_id) is None:
+        return jsonify({"error": "card not found"}), 404
+    cards = [c for c in cards if c["id"] != card_id]
+    persona_cards.save_cards(PERSONAS_DIR, persona_id, cards)
+    return jsonify({"deleted": True, "id": card_id})
 
 
 @app.route("/api/models")
@@ -1068,6 +1315,86 @@ def api_chat():
             "latency_ms": latency_ms,
             "model_used": actual_model,
             "conversation_id": conversation_id,
+        }
+    )
+
+
+@app.route("/api/chat/reference", methods=["POST"])
+def api_chat_reference():
+    """Insert a quick-reference card Q&A into history with no model call."""
+    identity = _caller_identity()
+    body = request.get_json(force=True) or {}
+    persona_name = body.get("persona")
+    card_id = body.get("card_id")
+    conversation_id = body.get("conversation_id") or None
+    if not persona_name or not card_id:
+        return jsonify({"error": "persona and card_id are required"}), 400
+
+    path = _persona_modelfile(persona_name)
+    if not path.exists():
+        return jsonify({"error": "persona not found"}), 404
+    card = persona_cards.find_card(persona_cards.load_cards(PERSONAS_DIR, persona_name), card_id)
+    if card is None:
+        return jsonify({"error": "card not found"}), 404
+
+    try:
+        persona = load_persona_file(path)
+        model_used = persona.base_model
+    except ModelfileParseError:
+        model_used = "card"
+
+    user_message = card["title"]
+    source_meta = {
+        "card_id": card["id"],
+        "verified": bool(card["verified"]),
+        "verified_by": card.get("verified_by"),
+        "verified_source": card.get("verified_source"),
+    }
+
+    conn = _db()
+    try:
+        if conversation_id:
+            existing = store.get_conversation(conn, conversation_id)
+            if existing is None or not _owns_conversation(existing, identity):
+                return jsonify({"error": "conversation not found"}), 404
+        else:
+            conversation_id = store.create_conversation(
+                conn, persona_name, model_used, identity["owner_id"]
+            )
+        store.add_message(
+            conn,
+            conversation_id,
+            "user",
+            user_message,
+            source="card",
+            source_id=card["id"],
+            source_meta=source_meta,
+        )
+        store.add_message(
+            conn,
+            conversation_id,
+            "assistant",
+            card["answer"],
+            latency_ms=0,
+            source="card",
+            source_id=card["id"],
+            source_meta=source_meta,
+        )
+    finally:
+        conn.close()
+
+    return jsonify(
+        {
+            "reply": card["answer"],
+            "user_message": user_message,
+            "latency_ms": 0,
+            "model_used": model_used,
+            "conversation_id": conversation_id,
+            "source": "card",
+            "card_id": card["id"],
+            "verified": bool(card["verified"]),
+            "verified_by": card.get("verified_by"),
+            "verified_source": card.get("verified_source"),
         }
     )
 

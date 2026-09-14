@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 import sys
 import time
@@ -19,15 +20,19 @@ import pairing_store  # noqa: E402
 @pytest.fixture
 def app(tmp_path, monkeypatch):
     """Import server fresh with DATA_DIR/LOG_FILE/SETTINGS_FILE/DB_FILE
-    redirected to a temp dir, so tests never touch the real data/ folder."""
+    redirected to a temp dir, so tests never touch the real data/ folder.
+    Personas are copied so CRUD tests cannot mutate the repo tree."""
     import server as server_module
 
+    personas_copy = tmp_path / "personas"
+    shutil.copytree(ROOT / "personas", personas_copy)
     monkeypatch.setattr(server_module, "DATA_DIR", tmp_path)
     monkeypatch.setattr(server_module, "LOG_FILE", tmp_path / "logs.jsonl")
     monkeypatch.setattr(server_module, "SETTINGS_FILE", tmp_path / "settings.json")
     monkeypatch.setattr(server_module, "THEME_FILE", tmp_path / "theme.json")
     monkeypatch.setattr(server_module, "DB_FILE", tmp_path / "chats.db")
     monkeypatch.setattr(server_module, "PAIRING_FILE", tmp_path / "pairing.json")
+    monkeypatch.setattr(server_module, "PERSONAS_DIR", personas_copy)
     server_module._built_personas.clear()
     server_module.set_managed_ollama_base_url(None)
     server_module.app.config.update(TESTING=True)
@@ -162,6 +167,17 @@ def test_api_personas_lists_bundled_personas(client):
         assert "icon" in p
         assert p["icon"] in {"message", "shield", "person", "lightbulb"}
         assert "base_model" in p or "error" in p
+        assert isinstance(p.get("cards"), list)
+    survival_cards = by_id["survival-guide"]["cards"]
+    assert len(survival_cards) == 3
+    for card in survival_cards:
+        assert card["verified"] is False
+        assert card["verified_by"] is None
+        assert card["verified_source"] is None
+        assert "PLACEHOLDER" in card["answer"]
+        assert card["id"]
+        assert card["title"]
+    assert by_id["assistant"]["cards"] == []
     defaults = [p for p in payload if p.get("is_default")]
     assert len(defaults) == 1
     assert defaults[0]["id"] == "assistant"
@@ -680,6 +696,13 @@ def test_index_includes_pairing_gate_and_sidebar_toggle(client):
     assert 'id="menuBtn"' in html
     assert 'id="deviceCountPill"' in html
     assert 'id="connectDeviceBtn"' in html
+    assert 'id="cardChips"' in html
+    assert 'id="pane-personas"' in html
+    assert "Add persona" in html
+    js = client.get("/app.js").data.decode()
+    assert "⚠ Not yet verified" in js
+    assert "Quick reference" in js
+    assert "/api/chat/reference" in js
     assert 'id="connectDeviceModal" class="modal-backdrop hidden"' in html
     assert "Connect a device" in html
     sidebar = html.split('id="sidebar"', 1)[1].split("</aside>", 1)[0]
