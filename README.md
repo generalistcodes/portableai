@@ -14,6 +14,15 @@ searchable history — all running on your own machine, with nothing sent
 to the cloud. Pull, browse, and update models from one place, and pair
 your phone over your local network in seconds.
 
+Other 'local AI' products are chasing this from the expensive end --
+Perplexity's Portable Computer (launched with NVIDIA, August 2026)
+needs a $4,700 DGX Spark or a high-end GPU workstation, plus an active
+Pro/Max subscription, and by its own admission isn't fully offline --
+it calls out to the cloud for harder tasks with permission. PortableAI
+runs on the laptop you already have, costs nothing, and needs zero
+internet connection, ever -- that's not a limitation, it's the whole
+point.
+
 The iPhone companion is developed in a **separate repo**
 (`portableai-ios`); this tree is the server/UI only. Clients should
 follow `docs/API_CONTRACT.md` for the live `/api/*` surface.
@@ -90,6 +99,7 @@ portableai.spec                  # Linux-only PyInstaller one-file build (Mac/Wi
 requirements-dev.txt             # PyInstaller; build-time only, not needed to run from source
 docs/
   API_CONTRACT.md                # every /api/* route as implemented — iOS/client source of truth
+  ROADMAP.md                     # current project status — single source of truth
   MODEL_BENCHMARK.md             # generated from benchmarks/prompts.json
   BENCHMARK_RESULTS.md           # last real run, with a recommendation
 demo.py                          # CLI: build a persona and chat with it

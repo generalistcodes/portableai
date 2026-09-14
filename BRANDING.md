@@ -3,9 +3,10 @@
 ## GitHub repo "About" field (character limit: 350)
 Self-hosted, offline-first chat UI for Ollama — build AI personas, chat
 from your browser or iPhone, and keep everything local. No cloud, no
-accounts.
+accounts. Free, open-source, and genuinely offline -- unlike
+$4,700-hardware competitors, runs on the laptop you already have.
 
-(150 characters — comfortably under the limit, short enough to read in
+(267 characters — comfortably under the limit, short enough to read in
 the sidebar without truncating.)
 
 ## One-line tagline
