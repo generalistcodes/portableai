@@ -179,7 +179,8 @@ def test_assistant_copy_button_is_hover_only_with_clipboard_fallback(client):
     assert "opacity: 0" in css
     assert ".bubble:hover .bubble-copy" in css
     html = client.get("/").data.decode()
-    assert "copy-reply-1" in html
+    assert "style.css?v=" in html
+    assert "app.js?v=" in html
 
 
 def test_persona_list_ui_hides_model_and_renders_icons(client):
@@ -677,6 +678,15 @@ def test_index_includes_pairing_gate_and_sidebar_toggle(client):
     assert 'id="pairingGate"' in html
     assert 'id="sidebarToggle"' in html
     assert 'id="menuBtn"' in html
+    assert 'id="deviceCountPill"' in html
+    assert 'id="connectDeviceBtn"' in html
+    assert 'id="connectDeviceModal" class="modal-backdrop hidden"' in html
+    assert "Connect a device" in html
+    sidebar = html.split('id="sidebar"', 1)[1].split("</aside>", 1)[0]
+    assert "pairingPinText" not in sidebar
+    assert "connectPinText" not in sidebar
+    assert "pairingQrImg" not in sidebar
+    assert "connectQrImg" not in sidebar
 
 
 def test_lan_request_without_token_is_rejected(client):

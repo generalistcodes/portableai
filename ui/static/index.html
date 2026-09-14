@@ -20,7 +20,7 @@
   })();
 </script>
 <link rel="icon" type="image/png" href="logo.png?v=badge-1">
-<link rel="stylesheet" href="style.css?v=copy-reply-1">
+<link rel="stylesheet" href="style.css?v=connect-device-1">
 </head>
 <body>
 <div class="app">
@@ -71,7 +71,15 @@
       <button id="statusPill" class="status-pill status-unknown">
         <span class="dot"></span><span id="statusText">checking Ollama…</span>
       </button>
+      <span id="deviceCountPill" class="status-pill device-count-pill" title="Paired devices" aria-live="polite">
+        <svg class="device-count-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M10 13a5 5 0 0 0 7.07 0l1.41-1.41a5 5 0 0 0-7.07-7.07L10 5.93"/>
+          <path d="M14 11a5 5 0 0 0-7.07 0L5.5 12.41a5 5 0 0 0 7.07 7.07L14 18.07"/>
+        </svg>
+        <span id="deviceCountText">0 connected</span>
+      </span>
       <button id="logsBtn" class="sidebar-icon-btn">Logs</button>
+      <button id="connectDeviceBtn" class="sidebar-icon-btn" type="button">Connect a device</button>
       <button id="settingsBtn" class="sidebar-icon-btn" type="button">Settings <span id="settingsUpdateDot" class="update-dot hidden" title="Update available">●</span></button>
     </div>
     </div>
@@ -322,6 +330,41 @@
   </div>
 </div>
 
+<!-- Connect-a-device popover: PIN/QR only after an explicit click -->
+<div id="connectDeviceModal" class="modal-backdrop hidden">
+  <div class="modal connect-device-window" role="dialog" aria-labelledby="connectDeviceTitle" aria-modal="true">
+    <div class="modal-header">
+      <h2 id="connectDeviceTitle">Connect a device</h2>
+      <button class="close-btn" data-close="connectDeviceModal" type="button">×</button>
+    </div>
+    <div class="modal-body">
+      <p class="muted">
+        Scan the QR code in the PortableAI iOS app, or on your phone's
+        browser go to <code id="connectLanUrlText">—</code> and enter this PIN once.
+      </p>
+      <div class="pairing-pin-row">
+        <img id="connectQrImg" class="pairing-qr" src="" width="160" height="160" alt="Pairing QR code">
+        <div class="pairing-pin-col">
+          <div class="pairing-pin-cluster">
+            <span id="connectPinText" class="pairing-pin">——————</span>
+            <div class="pairing-countdown" hidden>
+              <span class="pairing-countdown-dot" aria-hidden="true"></span>
+              <span class="pairing-countdown-label">Expires in</span>
+              <span id="connectPinCountdown" class="pairing-countdown-time" aria-live="polite"></span>
+            </div>
+          </div>
+          <button id="connectRegeneratePinBtn" class="primary-btn" type="button">New PIN</button>
+        </div>
+      </div>
+      <div id="connectLanIpWarning" class="lan-ip-warning hidden">
+        Could not detect a LAN address on this machine — phones won't be
+        able to reach this server. Check that WiFi is connected or a
+        hotspot is running, then click "New PIN" to retry.
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="pairingGate" class="modal-backdrop pairing-gate hidden">
   <div class="modal" role="dialog" aria-labelledby="pairingGateTitle" aria-modal="true">
     <div class="modal-header">
@@ -347,6 +390,6 @@
   </div>
 </div>
 
-<script src="app.js?v=theme-sync-1"></script>
+<script src="app.js?v=connect-device-1"></script>
 </body>
 </html>
