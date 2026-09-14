@@ -621,6 +621,20 @@ html, body {
 .status-pill.status-ok .dot { background: var(--accent); }
 .status-pill.status-down .dot { background: var(--danger); }
 
+.device-count-pill {
+  cursor: default;
+}
+.device-count-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .sidebar-icon-btn {
   display: flex;
   align-items: center;
@@ -784,6 +798,7 @@ html, body {
   overflow: hidden;
 }
 .modal-wide { width: 640px; }
+.connect-device-window { width: 460px; }
 
 .modal-header {
   display: flex;

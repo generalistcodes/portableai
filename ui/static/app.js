@@ -183,6 +183,24 @@ async function refreshStatus() {
     pill.className = "status-pill status-down";
     text.textContent = err.pairingRequired ? "Pairing required" : "Status check failed";
   }
+  refreshDeviceCount();
+}
+
+function updateDeviceCountLabel(n) {
+  const text = el("deviceCountText");
+  if (!text) return;
+  const count = Number.isFinite(n) ? n : 0;
+  text.textContent = count === 1 ? "1 connected" : `${count} connected`;
+}
+
+async function refreshDeviceCount() {
+  try {
+    const devices = await api("/api/pairing/devices");
+    updateDeviceCountLabel(Array.isArray(devices) ? devices.length : 0);
+  } catch {
+    const text = el("deviceCountText");
+    if (text) text.textContent = "—";
+  }
 }
 
 // ---------- Models ----------
@@ -1026,12 +1044,30 @@ function filterSettingsNav() {
   }
 }
 
+function isModalOpen(id) {
+  const node = el(id);
+  return Boolean(node && !node.classList.contains("hidden"));
+}
+
+function startPairingPoll() {
+  if (pairingPollInterval) {
+    clearInterval(pairingPollInterval);
+    pairingPollInterval = null;
+  }
+  pairingPollInterval = setInterval(loadPairingInfo, 5000);
+}
+
+function stopPairingPollIfIdle() {
+  if (isModalOpen("settingsModal") || isModalOpen("connectDeviceModal")) return;
+  if (pairingPollInterval) { clearInterval(pairingPollInterval); pairingPollInterval = null; }
+  if (pairingCountdownInterval) { clearInterval(pairingCountdownInterval); pairingCountdownInterval = null; }
+}
+
 function openModal(id) { el(id).classList.remove("hidden"); }
 function closeModal(id) {
   el(id).classList.add("hidden");
-  if (id === "settingsModal") {
-    if (pairingPollInterval) { clearInterval(pairingPollInterval); pairingPollInterval = null; }
-    if (pairingCountdownInterval) { clearInterval(pairingCountdownInterval); pairingCountdownInterval = null; }
+  if (id === "settingsModal" || id === "connectDeviceModal") {
+    stopPairingPollIfIdle();
   }
 }
 
@@ -1051,6 +1087,7 @@ if (catalogSearch) catalogSearch.addEventListener("input", filterCatalogTable);
 
 el("settingsBtn").addEventListener("click", async () => {
   closeMobileSidebar();
+  closeModal("connectDeviceModal");
   let settings;
   try {
     settings = await api("/api/settings");
@@ -1082,8 +1119,7 @@ el("settingsBtn").addEventListener("click", async () => {
   await loadModels();
   await loadCatalog();
   await loadPairingInfo();
-  if (pairingPollInterval) { clearInterval(pairingPollInterval); pairingPollInterval = null; }
-  pairingPollInterval = setInterval(loadPairingInfo, 5000);
+  startPairingPoll();
   openModal("settingsModal");
 });
 
@@ -1155,33 +1191,34 @@ async function maybeAutoCheckUpdatesOnStartup() {
 function startPairingCountdown(expiresAt) {
   if (pairingCountdownInterval) clearInterval(pairingCountdownInterval);
   pairingCountdownInterval = null;
-  const countdownEl = el("pairingPinCountdown");
-  if (!countdownEl) return;
-  const chip = countdownEl.closest(".pairing-countdown");
-  const labelEl = chip ? chip.querySelector(".pairing-countdown-label") : null;
+  const chips = document.querySelectorAll(".pairing-countdown");
+  if (!chips.length) return;
 
   const render = (remaining) => {
-    if (remaining == null) {
-      countdownEl.textContent = "";
-      if (labelEl) labelEl.textContent = "Expires in";
-      if (chip) {
+    chips.forEach((chip) => {
+      const countdownEl = chip.querySelector(".pairing-countdown-time");
+      const labelEl = chip.querySelector(".pairing-countdown-label");
+      if (!countdownEl) return;
+      if (remaining == null) {
+        countdownEl.textContent = "";
+        if (labelEl) labelEl.textContent = "Expires in";
         chip.hidden = true;
         chip.classList.remove("is-expired");
+        return;
       }
-      return;
-    }
-    if (chip) chip.hidden = false;
-    if (remaining <= 0) {
-      if (chip) chip.classList.add("is-expired");
-      if (labelEl) labelEl.textContent = "Expired";
-      countdownEl.textContent = "refreshing...";
-      return;
-    }
-    if (chip) chip.classList.remove("is-expired");
-    if (labelEl) labelEl.textContent = "Expires in";
-    const mins = Math.floor(remaining / 60);
-    const secs = remaining % 60;
-    countdownEl.textContent = `${mins}:${secs.toString().padStart(2, "0")}`;
+      chip.hidden = false;
+      if (remaining <= 0) {
+        chip.classList.add("is-expired");
+        if (labelEl) labelEl.textContent = "Expired";
+        countdownEl.textContent = "refreshing...";
+        return;
+      }
+      chip.classList.remove("is-expired");
+      if (labelEl) labelEl.textContent = "Expires in";
+      const mins = Math.floor(remaining / 60);
+      const secs = remaining % 60;
+      countdownEl.textContent = `${mins}:${secs.toString().padStart(2, "0")}`;
+    });
   };
 
   const expires = Number(expiresAt);
@@ -1207,17 +1244,38 @@ function startPairingCountdown(expiresAt) {
   pairingCountdownInterval = setInterval(tick, 1000);
 }
 
+function setPairingText(id, value) {
+  const node = el(id);
+  if (node) node.textContent = value;
+}
+
+function setPairingSrc(id, value) {
+  const node = el(id);
+  if (node) node.src = value;
+}
+
+function setPairingHidden(id, hidden) {
+  const node = el(id);
+  if (node) node.classList.toggle("hidden", hidden);
+}
+
 async function loadPairingInfo() {
   try {
     const data = await api("/api/pairing/pin");
-    el("pairingPinText").textContent = data.pin;
-    el("lanUrlText").textContent = data.lan_url;
-    el("lanIpWarning").classList.toggle("hidden", data.lan_ip_detected !== false);
+    setPairingText("pairingPinText", data.pin);
+    setPairingText("connectPinText", data.pin);
+    setPairingText("lanUrlText", data.lan_url);
+    setPairingText("connectLanUrlText", data.lan_url);
+    setPairingHidden("lanIpWarning", data.lan_ip_detected !== false);
+    setPairingHidden("connectLanIpWarning", data.lan_ip_detected !== false);
     // Cache-bust so the browser doesn't reuse a QR image for the old PIN.
-    el("pairingQrImg").src = `/api/pairing/qr.svg?t=${Date.now()}`;
+    const qrSrc = `/api/pairing/qr.svg?t=${Date.now()}`;
+    setPairingSrc("pairingQrImg", qrSrc);
+    setPairingSrc("connectQrImg", qrSrc);
     startPairingCountdown(data.expires_at);
   } catch (err) {
-    el("pairingPinText").textContent = "error";
+    setPairingText("pairingPinText", "error");
+    setPairingText("connectPinText", "error");
     startPairingCountdown(null);
   }
   try {
@@ -1229,13 +1287,16 @@ async function loadPairingInfo() {
 }
 
 function renderPairedDevices(devices) {
+  const list = Array.isArray(devices) ? devices : [];
+  updateDeviceCountLabel(list.length);
   const container = el("pairedDevicesList");
-  if (!devices.length) {
+  if (!container) return;
+  if (!list.length) {
     container.innerHTML = '<p class="muted small">No devices paired yet.</p>';
     return;
   }
   container.innerHTML = "";
-  devices.forEach((d) => {
+  list.forEach((d) => {
     const row = document.createElement("div");
     row.className = "model-row";
     const paired = new Date(d.paired_at * 1000).toLocaleDateString();
@@ -1259,6 +1320,19 @@ el("pairedDevicesList").addEventListener("click", async (e) => {
 });
 
 el("regeneratePinBtn").addEventListener("click", async () => {
+  await api("/api/pairing/pin/regenerate", { method: "POST" });
+  loadPairingInfo();
+});
+
+el("connectDeviceBtn").addEventListener("click", async () => {
+  closeMobileSidebar();
+  closeModal("settingsModal");
+  await loadPairingInfo();
+  startPairingPoll();
+  openModal("connectDeviceModal");
+});
+
+el("connectRegeneratePinBtn").addEventListener("click", async () => {
   await api("/api/pairing/pin/regenerate", { method: "POST" });
   loadPairingInfo();
 });
