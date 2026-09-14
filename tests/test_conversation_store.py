@@ -67,6 +67,19 @@ def test_messages_are_returned_in_order(conn):
     messages = store.get_messages(conn, conv_id)
     assert [m["role"] for m in messages] == ["user", "assistant", "user"]
     assert messages[1]["latency_ms"] == 812
+    assert messages[0]["source"] == "chat"
+
+
+def test_card_source_is_persisted_on_messages(conn):
+    conv_id = store.create_conversation(conn, "survival-guide", "llama3.2:3b", LOCAL)
+    meta = {"card_id": "severe-bleeding", "verified": False}
+    store.add_message(conn, conv_id, "user", "Severe bleeding", source="card", source_id="severe-bleeding", source_meta=meta)
+    store.add_message(conn, conv_id, "assistant", "PLACEHOLDER", latency_ms=0, source="card", source_id="severe-bleeding", source_meta=meta)
+    messages = store.get_messages(conn, conv_id)
+    assert messages[0]["source"] == "card"
+    assert messages[1]["source"] == "card"
+    assert messages[1]["source_id"] == "severe-bleeding"
+    assert messages[1]["source_meta"]["verified"] is False
 
 
 def test_get_conversation_missing_returns_none(conn):

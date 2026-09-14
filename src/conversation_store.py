@@ -21,6 +21,7 @@ server.py's _caller_identity()).
 """
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import time
@@ -53,6 +54,9 @@ CREATE TABLE IF NOT EXISTS messages (
     content TEXT NOT NULL,
     latency_ms INTEGER,
     created_at REAL NOT NULL,
+    source TEXT NOT NULL DEFAULT 'chat',
+    source_id TEXT,
+    source_meta TEXT,
     FOREIGN KEY (conversation_id) REFERENCES conversations(id)
 );
 
@@ -76,6 +80,17 @@ def _migrate_add_owner_id(conn: sqlite3.Connection) -> None:
     if "owner_id" not in columns:
         conn.execute(f"ALTER TABLE conversations ADD COLUMN owner_id TEXT NOT NULL DEFAULT '{LOCAL_OWNER_ID}'")
         conn.commit()
+
+
+def _migrate_add_message_source(conn: sqlite3.Connection) -> None:
+    columns = [row["name"] for row in conn.execute("PRAGMA table_info(messages)").fetchall()]
+    if "source" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN source TEXT NOT NULL DEFAULT 'chat'")
+    if "source_id" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN source_id TEXT")
+    if "source_meta" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN source_meta TEXT")
+    conn.commit()
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
@@ -110,6 +125,7 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
         conn.executescript(SCHEMA_SQL)
         conn.commit()
         _migrate_add_owner_id(conn)
+        _migrate_add_message_source(conn)
         conn.execute(_OWNER_INDEX_SQL)
         conn.commit()
     except ChatDatabaseError:
@@ -139,11 +155,16 @@ def add_message(
     role: str,
     content: str,
     latency_ms: int | None = None,
+    source: str = "chat",
+    source_id: str | None = None,
+    source_meta: dict | None = None,
 ) -> None:
     now = time.time()
+    meta = json.dumps(source_meta) if source_meta is not None else None
     conn.execute(
-        "INSERT INTO messages (conversation_id, role, content, latency_ms, created_at) VALUES (?, ?, ?, ?, ?)",
-        (conversation_id, role, content, latency_ms, now),
+        "INSERT INTO messages (conversation_id, role, content, latency_ms, created_at, source, source_id, source_meta) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (conversation_id, role, content, latency_ms, now, source or "chat", source_id, meta),
     )
     row = conn.execute("SELECT title FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
     if row is not None and row["title"] is None and role == "user":
@@ -157,13 +178,29 @@ def add_message(
     conn.commit()
 
 
+def _parse_source_meta(raw):
+    if not raw:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    try:
+        return json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+
+
 def get_messages(conn: sqlite3.Connection, conversation_id: str) -> list[dict]:
     rows = conn.execute(
-        "SELECT role, content, latency_ms, created_at FROM messages "
+        "SELECT role, content, latency_ms, created_at, source, source_id, source_meta FROM messages "
         "WHERE conversation_id = ? ORDER BY id ASC",
         (conversation_id,),
     ).fetchall()
-    return [dict(r) for r in rows]
+    messages = []
+    for r in rows:
+        item = dict(r)
+        item["source_meta"] = _parse_source_meta(item.get("source_meta"))
+        messages.append(item)
+    return messages
 
 
 def get_conversation(conn: sqlite3.Connection, conversation_id: str) -> dict | None:

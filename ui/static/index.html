@@ -20,7 +20,7 @@
   })();
 </script>
 <link rel="icon" type="image/png" href="logo.png?v=badge-1">
-<link rel="stylesheet" href="style.css?v=connect-device-1">
+<link rel="stylesheet" href="style.css?v=personas-cards-1">
 </head>
 <body>
 <div class="app">
@@ -114,10 +114,13 @@
       </div>
     </div>
 
-    <form id="composer" class="composer">
-      <textarea id="input" placeholder="Message the persona…" rows="1"></textarea>
-      <button type="submit" id="sendBtn">Send</button>
-    </form>
+    <div class="composer-stack">
+      <div id="cardChips" class="card-chips hidden" aria-label="Quick reference"></div>
+      <form id="composer" class="composer">
+        <textarea id="input" placeholder="Message the persona…" rows="1"></textarea>
+        <button type="submit" id="sendBtn">Send</button>
+      </form>
+    </div>
   </main>
 
 </div>
@@ -136,7 +139,7 @@
 
       <div class="settings-nav-group">
         <div class="settings-nav-group-label">Options</div>
-        <button type="button" class="settings-nav-item active" data-pane="general" data-search="general ollama url personas startup theme appearance dark light ube">
+        <button type="button" class="settings-nav-item active" data-pane="general" data-search="general ollama url startup theme appearance dark light ube">
           <svg class="settings-nav-icon" viewBox="0 0 24 24" aria-hidden="true">
             <line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/>
             <line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/>
@@ -144,6 +147,13 @@
             <line x1="2" y1="14" x2="6" y2="14"/><line x1="10" y1="8" x2="14" y2="8"/><line x1="18" y1="16" x2="22" y2="16"/>
           </svg>
           <span>General</span>
+        </button>
+        <button type="button" class="settings-nav-item" data-pane="personas" data-search="personas create edit cards default prompt system">
+          <svg class="settings-nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+            <circle cx="12" cy="7" r="4"/>
+          </svg>
+          <span>Personas</span>
         </button>
         <button type="button" class="settings-nav-item" data-pane="installed" data-search="installed models storage gguf disk">
           <svg class="settings-nav-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -212,6 +222,78 @@
               <div class="setting-item-description">Create persona models when the server starts. Off means they build lazily on first chat. Personas live in the personas/ folder as .Modelfile files.</div>
             </div>
             <input id="autoBuildInput" class="toggle" type="checkbox">
+          </div>
+        </section>
+
+        <section id="pane-personas" class="settings-pane hidden">
+          <div id="personasListView">
+            <p class="pane-lede">
+              Personas are shared by every device on this server. Creating or
+              editing them is only available from this machine.
+            </p>
+            <div id="personasSettingsList" class="models-table"></div>
+            <div class="setting-item">
+              <button id="addPersonaBtn" class="primary-btn" type="button">Add persona</button>
+            </div>
+          </div>
+          <div id="personaEditorView" class="hidden">
+            <button id="personaEditorBack" class="text-back-btn" type="button">← All personas</button>
+            <label class="field">
+              <span>Display name</span>
+              <input id="personaDisplayName" class="setting-input setting-input-full" type="text" maxlength="80">
+            </label>
+            <label class="field">
+              <span>Base model</span>
+              <select id="personaBaseModel" class="setting-input setting-input-full"></select>
+            </label>
+            <label class="field">
+              <span>System prompt</span>
+              <textarea id="personaSystemPrompt" class="setting-input setting-input-full persona-system-input" rows="8"></textarea>
+            </label>
+            <label class="field field-row">
+              <span>Default persona</span>
+              <input id="personaIsDefault" class="toggle" type="checkbox">
+            </label>
+            <p id="personaEditorError" class="pairing-error" role="alert"></p>
+            <div class="persona-editor-actions">
+              <button id="personaSaveBtn" class="primary-btn" type="button">Save persona</button>
+              <button id="personaDeleteBtn" class="danger-btn" type="button">Delete</button>
+            </div>
+            <div id="personaCardsSection" class="persona-cards-section hidden">
+              <div class="setting-item-name">Quick reference cards</div>
+              <p class="setting-item-description">Instant answers shown as chips above the chat box. Unverified cards warn in the chat, not only here.</p>
+              <div id="personaCardsList" class="models-table"></div>
+              <button id="addCardBtn" class="primary-btn" type="button">Add card</button>
+            </div>
+          </div>
+          <div id="cardEditorView" class="hidden">
+            <button id="cardEditorBack" class="text-back-btn" type="button">← Persona</button>
+            <label class="field">
+              <span>Title</span>
+              <input id="cardTitleInput" class="setting-input setting-input-full" type="text" maxlength="120">
+            </label>
+            <label class="field">
+              <span>Answer</span>
+              <textarea id="cardAnswerInput" class="setting-input setting-input-full persona-system-input" rows="6"></textarea>
+            </label>
+            <label class="field field-row">
+              <span>Verified</span>
+              <input id="cardVerifiedInput" class="toggle" type="checkbox">
+            </label>
+            <p class="setting-item-description">Marking verified requires who checked it and against what source. The API rejects verified cards without that audit trail.</p>
+            <label class="field">
+              <span>Verified by</span>
+              <input id="cardVerifiedByInput" class="setting-input setting-input-full" type="text" maxlength="120" placeholder="Name or role">
+            </label>
+            <label class="field">
+              <span>Verified source</span>
+              <input id="cardVerifiedSourceInput" class="setting-input setting-input-full" type="text" maxlength="500" placeholder="Manual, URL, or publication">
+            </label>
+            <p id="cardEditorError" class="pairing-error" role="alert"></p>
+            <div class="persona-editor-actions">
+              <button id="cardSaveBtn" class="primary-btn" type="button">Save card</button>
+              <button id="cardDeleteBtn" class="danger-btn" type="button">Delete card</button>
+            </div>
           </div>
         </section>
 
@@ -390,6 +472,6 @@
   </div>
 </div>
 
-<script src="app.js?v=connect-device-1"></script>
+<script src="app.js?v=personas-cards-1"></script>
 </body>
 </html>

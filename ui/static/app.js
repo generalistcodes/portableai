@@ -626,6 +626,7 @@ async function loadPersonas() {
     if (landing) selectPersona(landing.id);
   }
   populateModelSelect();
+  renderCardChips();
 }
 
 function selectPersona(id) {
@@ -636,6 +637,7 @@ function selectPersona(id) {
   updateChatHeader();
   populateModelSelect();
   showEmptyState(currentPersona());
+  renderCardChips();
   loadConversations(); // clears "active" highlight on any previously-open chat
 }
 
@@ -677,6 +679,7 @@ function beginNewChat() {
   updateChatHeader();
   populateModelSelect();
   showEmptyState(persona);
+  renderCardChips();
   loadConversations();
 }
 
@@ -753,7 +756,7 @@ function addCopyButton(bubble, rawText) {
   bubble.appendChild(btn);
 }
 
-function appendMessage(role, content, meta = "") {
+function appendMessage(role, content, meta = "", opts = {}) {
   const messages = el("messages");
   const emptyState = messages.querySelector(".empty-state");
   if (emptyState) emptyState.remove();
@@ -763,6 +766,13 @@ function appendMessage(role, content, meta = "") {
 
   const bubble = document.createElement("div");
   bubble.className = "bubble" + (role === "error" ? " error" : "");
+  if (opts.source === "card" && role === "assistant") {
+    bubble.classList.add("bubble-card");
+    const tag = document.createElement("div");
+    tag.className = "card-ref-label";
+    tag.textContent = "Quick reference";
+    bubble.appendChild(tag);
+  }
 
   const contentDiv = document.createElement("div");
   contentDiv.className = "bubble-content";
@@ -772,6 +782,13 @@ function appendMessage(role, content, meta = "") {
     contentDiv.textContent = content;
   }
   bubble.appendChild(contentDiv);
+
+  if (opts.source === "card" && role === "assistant" && opts.verified === false) {
+    const warn = document.createElement("div");
+    warn.className = "card-unverified-note";
+    warn.textContent = "⚠ Not yet verified";
+    bubble.appendChild(warn);
+  }
 
   if (meta) {
     const metaEl = document.createElement("span");
@@ -848,6 +865,50 @@ el("input").addEventListener("keydown", (e) => {
     el("composer").requestSubmit();
   }
 });
+
+function renderCardChips() {
+  const wrap = el("cardChips");
+  if (!wrap) return;
+  const persona = currentPersona();
+  const cards = (persona && Array.isArray(persona.cards)) ? persona.cards : [];
+  wrap.innerHTML = "";
+  if (!cards.length) {
+    wrap.classList.add("hidden");
+    return;
+  }
+  wrap.classList.remove("hidden");
+  cards.forEach((card) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "card-chip" + (card.verified ? "" : " card-chip-unverified");
+    btn.textContent = card.title;
+    btn.addEventListener("click", () => insertCardReference(card));
+    wrap.appendChild(btn);
+  });
+}
+
+async function insertCardReference(card) {
+  if (!state.activePersona) return;
+  try {
+    const data = await api("/api/chat/reference", {
+      method: "POST",
+      body: JSON.stringify({
+        persona: state.activePersona,
+        card_id: card.id,
+        conversation_id: state.conversationId,
+      }),
+    });
+    appendMessage("user", data.user_message);
+    appendMessage("assistant", data.reply, "", {
+      source: "card",
+      verified: Boolean(data.verified),
+    });
+    state.conversationId = data.conversation_id;
+    loadConversations();
+  } catch (err) {
+    if (!err.pairingRequired) appendMessage("error", err.message);
+  }
+}
 
 el("newChatBtn").addEventListener("click", beginNewChat);
 
@@ -937,9 +998,17 @@ async function openConversation(id) {
     el("messages").appendChild(emptyStateNode(persona));
   } else {
     conv.messages.forEach((m) => {
-      appendMessage(m.role, m.content, m.latency_ms ? `${m.latency_ms} ms` : "");
+      const isCard = m.source === "card";
+      const verified = isCard ? Boolean(m.source_meta && m.source_meta.verified) : undefined;
+      appendMessage(
+        m.role,
+        m.content,
+        isCard ? "" : (m.latency_ms ? `${m.latency_ms} ms` : ""),
+        { source: m.source, verified: isCard ? verified : undefined }
+      );
     });
   }
+  renderCardChips();
   loadConversations();
 }
 
@@ -1006,6 +1075,7 @@ let pairingPollInterval = null;
 
 const SETTINGS_PANE_TITLES = {
   general: "General",
+  personas: "Personas",
   installed: "Installed models",
   download: "Download",
   updates: "Updates",
@@ -1023,6 +1093,10 @@ function showSettingsPane(pane) {
   el("settingsPaneTitle").textContent = SETTINGS_PANE_TITLES[pane] || pane;
   el("settingsFooter").classList.toggle("hidden", pane !== "general" && pane !== "updates");
   if (pane === "pairing") loadPairingInfo();
+  if (pane === "personas") {
+    showPersonasListView();
+    renderPersonasSettingsList();
+  }
 }
 
 function filterSettingsNav() {
@@ -1185,6 +1259,263 @@ async function maybeAutoCheckUpdatesOnStartup() {
     // background/optional -- never surface an error for this
   }
 }
+
+// ---------- Personas (Settings) ----------
+
+const personaEditor = { id: null };
+const cardEditor = { id: null };
+
+function showPersonasListView() {
+  el("personasListView").classList.remove("hidden");
+  el("personaEditorView").classList.add("hidden");
+  el("cardEditorView").classList.add("hidden");
+  el("settingsPaneTitle").textContent = "Personas";
+}
+
+function showPersonaEditorView() {
+  el("personasListView").classList.add("hidden");
+  el("personaEditorView").classList.remove("hidden");
+  el("cardEditorView").classList.add("hidden");
+}
+
+function showCardEditorView() {
+  el("personasListView").classList.add("hidden");
+  el("personaEditorView").classList.add("hidden");
+  el("cardEditorView").classList.remove("hidden");
+  el("settingsPaneTitle").textContent = "Quick reference card";
+}
+
+function fillPersonaBaseModelSelect(selected) {
+  const select = el("personaBaseModel");
+  select.innerHTML = "";
+  state.models.forEach((m) => {
+    if (isPersonaBuiltModel(m.name)) return;
+    const opt = document.createElement("option");
+    opt.value = m.name;
+    opt.textContent = m.name;
+    select.appendChild(opt);
+  });
+  if (selected && ![...select.options].some((o) => o.value === selected)) {
+    const opt = document.createElement("option");
+    opt.value = selected;
+    opt.textContent = selected;
+    select.appendChild(opt);
+  }
+  if (selected) select.value = selected;
+}
+
+function renderPersonasSettingsList() {
+  const container = el("personasSettingsList");
+  if (!container) return;
+  container.innerHTML = "";
+  if (!state.personas.length) {
+    container.innerHTML = '<p class="muted small">No personas yet.</p>';
+    return;
+  }
+  state.personas.forEach((p) => {
+    const row = document.createElement("div");
+    row.className = "model-row";
+    const defaultMark = p.is_default ? " · default" : "";
+    const cardCount = Array.isArray(p.cards) ? p.cards.length : 0;
+    row.innerHTML = `
+      <span>
+        <span class="model-name">${escapeHtml(personaLabel(p))}</span><br>
+        <span class="model-detail">${escapeHtml(p.base_model || "")}${defaultMark} · ${cardCount} cards</span>
+      </span>
+      <button class="icon-btn" data-edit-persona="${escapeHtml(p.id)}" title="Edit">✎</button>
+    `;
+    container.appendChild(row);
+  });
+}
+
+function openPersonaEditor(id) {
+  personaEditor.id = id;
+  el("personaEditorError").textContent = "";
+  fillPersonaBaseModelSelect();
+  const persona = id ? state.personas.find((p) => p.id === id) : null;
+  el("personaDisplayName").value = persona ? (persona.display_name || "") : "";
+  fillPersonaBaseModelSelect(persona ? persona.base_model : "");
+  el("personaSystemPrompt").value = persona ? (persona.system_prompt || "") : "";
+  el("personaIsDefault").checked = persona ? Boolean(persona.is_default) : false;
+  el("personaDeleteBtn").classList.toggle("hidden", !id);
+  el("personaCardsSection").classList.toggle("hidden", !id);
+  el("settingsPaneTitle").textContent = id ? "Edit persona" : "Add persona";
+  renderPersonaCardsList(persona);
+  showPersonaEditorView();
+}
+
+function renderPersonaCardsList(persona) {
+  const container = el("personaCardsList");
+  container.innerHTML = "";
+  const cards = (persona && persona.cards) || [];
+  if (!cards.length) {
+    container.innerHTML = '<p class="muted small">No cards yet.</p>';
+    return;
+  }
+  cards.forEach((card) => {
+    const row = document.createElement("div");
+    row.className = "model-row";
+    const badge = card.verified
+      ? `<span class="card-badge card-badge-verified">✓ Verified by ${escapeHtml(card.verified_by || "unknown")}</span>`
+      : `<span class="card-badge card-badge-unverified">⚠ Unverified</span>`;
+    row.innerHTML = `
+      <span>
+        <span class="model-name">${escapeHtml(card.title)}</span>${badge}<br>
+        <span class="model-detail">${escapeHtml((card.answer || "").slice(0, 80))}</span>
+      </span>
+      <button class="icon-btn" data-edit-card="${escapeHtml(card.id)}" title="Edit">✎</button>
+    `;
+    container.appendChild(row);
+  });
+}
+
+async function reloadPersonasAndSettings() {
+  await loadPersonas();
+  const persona = personaEditor.id ? state.personas.find((p) => p.id === personaEditor.id) : null;
+  if (personaEditor.id && persona) renderPersonaCardsList(persona);
+  renderPersonasSettingsList();
+}
+
+el("personasSettingsList").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-edit-persona]");
+  if (!btn) return;
+  openPersonaEditor(btn.dataset.editPersona);
+});
+
+el("addPersonaBtn").addEventListener("click", () => openPersonaEditor(null));
+el("personaEditorBack").addEventListener("click", () => {
+  showPersonasListView();
+  renderPersonasSettingsList();
+});
+
+el("personaSaveBtn").addEventListener("click", async () => {
+  const errEl = el("personaEditorError");
+  errEl.textContent = "";
+  const body = {
+    display_name: el("personaDisplayName").value.trim(),
+    base_model: el("personaBaseModel").value,
+    system_prompt: el("personaSystemPrompt").value.trim(),
+    is_default: el("personaIsDefault").checked,
+  };
+  try {
+    let data;
+    if (personaEditor.id) {
+      data = await api(`/api/personas/${personaEditor.id}`, { method: "PUT", body: JSON.stringify(body) });
+    } else {
+      data = await api("/api/personas", { method: "POST", body: JSON.stringify(body) });
+      personaEditor.id = data.id;
+    }
+    await reloadPersonasAndSettings();
+    openPersonaEditor(data.id);
+  } catch (err) {
+    errEl.textContent = err.message;
+  }
+});
+
+el("personaDeleteBtn").addEventListener("click", async () => {
+  if (!personaEditor.id) return;
+  if (!window.confirm("Delete this persona and its cards? This cannot be undone.")) return;
+  try {
+    await api(`/api/personas/${personaEditor.id}`, { method: "DELETE" });
+    personaEditor.id = null;
+    await loadPersonas();
+    showPersonasListView();
+    renderPersonasSettingsList();
+  } catch (err) {
+    el("personaEditorError").textContent = err.message;
+  }
+});
+
+el("personaCardsList").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-edit-card]");
+  if (!btn || !personaEditor.id) return;
+  const persona = state.personas.find((p) => p.id === personaEditor.id);
+  const card = (persona.cards || []).find((c) => c.id === btn.dataset.editCard);
+  if (card) openCardEditor(card);
+});
+
+el("addCardBtn").addEventListener("click", () => openCardEditor(null));
+el("cardEditorBack").addEventListener("click", () => {
+  const persona = state.personas.find((p) => p.id === personaEditor.id);
+  openPersonaEditor(personaEditor.id);
+  if (persona) renderPersonaCardsList(persona);
+});
+
+function openCardEditor(card) {
+  cardEditor.id = card ? card.id : null;
+  el("cardEditorError").textContent = "";
+  el("cardTitleInput").value = card ? card.title : "";
+  el("cardAnswerInput").value = card ? card.answer : "";
+  el("cardVerifiedInput").checked = Boolean(card && card.verified);
+  el("cardVerifiedByInput").value = card && card.verified_by ? card.verified_by : "";
+  el("cardVerifiedSourceInput").value = card && card.verified_source ? card.verified_source : "";
+  el("cardDeleteBtn").classList.toggle("hidden", !card);
+  showCardEditorView();
+}
+
+el("cardVerifiedInput").addEventListener("change", () => {
+  if (!el("cardVerifiedInput").checked) return;
+  const by = el("cardVerifiedByInput").value.trim();
+  const source = el("cardVerifiedSourceInput").value.trim();
+  if (!by || !source) {
+    el("cardVerifiedInput").checked = false;
+    el("cardEditorError").textContent = "Fill in verified by and verified source before marking a card verified.";
+  }
+});
+
+el("cardSaveBtn").addEventListener("click", async () => {
+  const errEl = el("cardEditorError");
+  errEl.textContent = "";
+  const verified = el("cardVerifiedInput").checked;
+  const verifiedBy = el("cardVerifiedByInput").value.trim();
+  const verifiedSource = el("cardVerifiedSourceInput").value.trim();
+  if (verified && (!verifiedBy || !verifiedSource)) {
+    errEl.textContent = "verified_by and verified_source are required to mark a card verified.";
+    return;
+  }
+  const body = {
+    title: el("cardTitleInput").value.trim(),
+    answer: el("cardAnswerInput").value.trim(),
+    verified,
+  };
+  if (verified) {
+    body.verified_by = verifiedBy;
+    body.verified_source = verifiedSource;
+  }
+  try {
+    if (cardEditor.id) {
+      await api(`/api/personas/${personaEditor.id}/cards/${cardEditor.id}`, {
+        method: "PUT",
+        body: JSON.stringify(body),
+      });
+    } else {
+      if (verified) {
+        errEl.textContent = "New cards start unverified. Save first, then mark verified with a source.";
+        return;
+      }
+      await api(`/api/personas/${personaEditor.id}/cards`, {
+        method: "POST",
+        body: JSON.stringify({ title: body.title, answer: body.answer }),
+      });
+    }
+    await reloadPersonasAndSettings();
+    openPersonaEditor(personaEditor.id);
+  } catch (err) {
+    errEl.textContent = err.message;
+  }
+});
+
+el("cardDeleteBtn").addEventListener("click", async () => {
+  if (!cardEditor.id || !personaEditor.id) return;
+  if (!window.confirm("Delete this card?")) return;
+  try {
+    await api(`/api/personas/${personaEditor.id}/cards/${cardEditor.id}`, { method: "DELETE" });
+    await reloadPersonasAndSettings();
+    openPersonaEditor(personaEditor.id);
+  } catch (err) {
+    el("cardEditorError").textContent = err.message;
+  }
+});
 
 // ---------- Phone pairing ----------
 

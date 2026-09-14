@@ -8,10 +8,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from persona_loader import (
     ModelfileParseError,
     Persona,
+    format_modelfile,
     humanize_persona_id,
     load_persona_file,
     normalize_icon,
     parse_modelfile,
+    write_default_flag,
 )
 
 PERSONAS_DIR = Path(__file__).resolve().parent.parent / "personas"
@@ -206,6 +208,40 @@ def test_bundled_persona_icons():
         persona = load_persona_file(PERSONAS_DIR / filename)
         assert persona.icon == icon
         assert persona.resolved_icon() == icon
+
+
+def test_format_modelfile_roundtrip():
+    original = parse_modelfile(
+        "FROM llama3.2:3b\n"
+        "# display_name: Field Notes\n"
+        "# default: true\n"
+        "# icon: message\n"
+        "PARAMETER temperature 0.4\n"
+        'SYSTEM """\nBe brief.\n"""\n'
+    )
+    again = parse_modelfile(format_modelfile(original))
+    assert again.base_model == "llama3.2:3b"
+    assert again.display_name == "Field Notes"
+    assert again.is_default is True
+    assert again.icon == "message"
+    assert again.system == "Be brief."
+    assert again.parameters["temperature"] == 0.4
+
+
+def test_write_default_flag_toggles_without_dropping_system(tmp_path):
+    path = tmp_path / "x.Modelfile"
+    path.write_text(
+        "FROM llama3.2:3b\n# display_name: X\nPARAMETER temperature 0.7\n"
+        'SYSTEM """\nKeep this.\n"""\n'
+    )
+    write_default_flag(path, True)
+    persona = load_persona_file(path)
+    assert persona.is_default is True
+    assert persona.system == "Keep this."
+    write_default_flag(path, False)
+    persona = load_persona_file(path)
+    assert persona.is_default is False
+    assert persona.system == "Keep this."
 
 
 def test_load_persona_file_missing_raises():

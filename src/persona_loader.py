@@ -10,6 +10,7 @@ payload Ollama's /api/create endpoint expects.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -209,6 +210,55 @@ def _metadata_from_comment(line: str) -> dict:
         if icon:
             return {"icon": icon}
     return {}
+
+
+def format_modelfile(persona: Persona) -> str:
+    """Serialize a Persona back to Modelfile text.
+
+    Used by the persona CRUD API. SYSTEM is always a triple-quoted block;
+    prompts containing `\"\"\"` are rejected before this is called.
+    """
+    lines = [f"FROM {persona.base_model}"]
+    if persona.display_name:
+        lines.append(f"# display_name: {persona.display_name}")
+    if persona.is_default:
+        lines.append("# default: true")
+    if persona.icon:
+        lines.append(f"# icon: {persona.icon}")
+    if persona.parameters:
+        lines.append("")
+        for key, value in persona.parameters.items():
+            lines.append(f"PARAMETER {key} {value}")
+    lines.append("")
+    system = persona.system or ""
+    lines.append('SYSTEM """')
+    lines.append(system)
+    lines.append('"""')
+    lines.append("")
+    return "\n".join(lines)
+
+
+def write_modelfile(path: str | Path, persona: Persona) -> None:
+    path = Path(path)
+    path.write_text(format_modelfile(persona), encoding="utf-8")
+
+
+def write_default_flag(path: str | Path, is_default: bool) -> None:
+    """Toggle `# default: true` without rewriting the rest of the file."""
+    path = Path(path)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines = [ln for ln in lines if not re.match(r"#\s*default\s*:", ln.strip(), re.I)]
+    if is_default:
+        insert_at = 1 if lines else 0
+        for i, ln in enumerate(lines):
+            stripped = ln.strip()
+            if stripped.lower().startswith("# display_name:"):
+                insert_at = i + 1
+                break
+            if stripped.upper().startswith("FROM "):
+                insert_at = i + 1
+        lines.insert(insert_at, "# default: true")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def load_persona_file(path: str | Path) -> Persona:

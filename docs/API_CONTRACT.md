@@ -70,8 +70,10 @@ Parsed persona (the usual case):
   "is_default": true,
   "icon": "message",
   "base_model": "llama3.2:3b",
+  "system_prompt": "You are a helpful, general-purpose assistant. …",
   "system_preview": "You are a helpful, general-purpose assistant. Answer naturally and\ndirectly, with no particular persona or exaggerated personality --\njust be clear, accurate, and easy to talk to.",
-  "parameters": { "temperature": 0.7 }
+  "parameters": { "temperature": 0.7 },
+  "cards": []
 }
 ```
 
@@ -82,11 +84,13 @@ Parsed persona (the usual case):
 | `is_default` | boolean | From `# default:` in the Modelfile, else `false`. **This field exists on the backend today.** |
 | `icon` | string | One of `message`, `shield`, `person`, `lightbulb`. |
 | `base_model` | string | Modelfile `FROM`. |
+| `system_prompt` | string | Full `SYSTEM` text (may be `""`). |
 | `system_preview` | string | First 160 characters of `SYSTEM` (may be `""`). |
 | `parameters` | object | Modelfile `PARAMETER` map; keys vary. Numeric params are numbers. |
+| `cards` | array | Quick-reference cards from `personas/<id>.cards.json`. Missing file → `[]`. Each card: `id`, `title`, `answer`, `verified` (boolean, never inferred from text), `verified_by`, `verified_source` (null when unverified). |
 
 Unparseable Modelfile (same array; **omits** `base_model`,
-`system_preview`, `parameters`):
+`system_prompt`, `system_preview`, `parameters`):
 
 ```json
 {
@@ -94,13 +98,77 @@ Unparseable Modelfile (same array; **omits** `base_model`,
   "display_name": "Broken Persona",
   "is_default": false,
   "icon": "message",
-  "error": "<parse error string>"
+  "error": "<parse error string>",
+  "cards": []
 }
 ```
 
 Clients should key off `id`, show `display_name`, treat `is_default` as
 the sidebar default, and use `icon` for the glyph. Do not assume
 `name`, `label`, `title`, or `default` — those are not in this payload.
+
+### `POST /api/personas`
+
+**Auth:** admin-only
+
+**Request:** `display_name`, `base_model` (must be an installed Ollama
+model), `system_prompt`, optional `is_default`, optional `cards`.
+
+`verified: true` on any card is **400** — the create path cannot mark
+cards verified. Use `PUT /api/personas/<id>/cards/<card_id>` for that.
+
+**Success (201):** the same persona object as GET (including `cards`).
+
+**400** specific `{"error": "…"}` for empty/too-long fields, uninstalled
+`base_model`, or a verified card on create.
+
+**503** if Ollama is down (cannot validate `base_model`).
+
+### `PUT /api/personas/<id>`
+
+**Auth:** admin-only
+
+Edits `display_name`, `system_prompt`, `is_default`, `base_model`.
+**Does not touch cards.** A `cards` key in the body is ignored.
+
+Cannot unset the only default. **404** if the persona does not exist.
+
+### `DELETE /api/personas/<id>`
+
+**Auth:** admin-only
+
+Removes the `.Modelfile` and sibling `.cards.json`. **400** if this is
+the only remaining persona. Deleting the default when others exist
+promotes another persona to default so there is always exactly one.
+
+**404** `{"error": "persona not found"}`.
+
+### `POST /api/personas/<id>/cards`
+
+**Auth:** admin-only
+
+**Request:** `title`, `answer`. `verified: true` is **400**.
+
+**Success (201):** the new card object (`verified` is always `false`).
+
+### `PUT /api/personas/<id>/cards/<card_id>`
+
+**Auth:** admin-only
+
+**This is the only way to set `verified` to true.** Request may include
+`title`, `answer`, `verified`, `verified_by`, `verified_source`.
+
+Setting `verified: true` without both `verified_by` and
+`verified_source` is **400**. Editing title/answer without sending
+`verified: true` clears the verified flag.
+
+**404** if the persona or card does not exist.
+
+### `DELETE /api/personas/<id>/cards/<card_id>`
+
+**Auth:** admin-only
+
+**Success (200):** `{"deleted": true, "id": "<card_id>"}`.
 
 ---
 
@@ -476,13 +544,19 @@ max 60 characters). Timestamps are Unix seconds (float).
       "role": "user",
       "content": "Should I deploy on Friday?",
       "latency_ms": null,
-      "created_at": 1732650000.5
+      "created_at": 1732650000.5,
+      "source": "chat",
+      "source_id": null,
+      "source_meta": null
     },
     {
       "role": "assistant",
       "content": "…",
       "latency_ms": 842,
-      "created_at": 1732650001.2
+      "created_at": 1732650001.2,
+      "source": "chat",
+      "source_id": null,
+      "source_meta": null
     }
   ]
 }
@@ -490,7 +564,10 @@ max 60 characters). Timestamps are Unix seconds (float).
 
 Message objects have **no** `id` field. `latency_ms` is set on assistant
 rows, `null` on user rows. `owner_id` is `"local"` for the desktop, or
-the device token for a phone.
+the device token for a phone. `source` is `"chat"` for model replies and
+`"card"` for quick-reference inserts. Card rows include `source_id` (the
+card id) and `source_meta` `{card_id, verified, verified_by, verified_source}`
+snapshotted at insert time.
 
 ### List row (GET collection)
 
@@ -627,6 +704,36 @@ or the incomplete-response string from `ollama_client`).
 
 The call is **not** streaming. The UI waits for this full JSON object.
 
+### `POST /api/chat/reference`
+
+**Auth:** requires-token
+
+Inserts a quick-reference card into conversation history **without**
+calling Ollama.
+
+**Request:** `{"persona": "survival-guide", "card_id": "severe-bleeding", "conversation_id": null}`
+
+**Success (200):**
+
+```json
+{
+  "reply": "PLACEHOLDER -- …",
+  "user_message": "Severe bleeding",
+  "latency_ms": 0,
+  "model_used": "llama3.2:3b",
+  "conversation_id": "uuid",
+  "source": "card",
+  "card_id": "severe-bleeding",
+  "verified": false,
+  "verified_by": null,
+  "verified_source": null
+}
+```
+
+**400** `{"error": "persona and card_id are required"}`
+
+**404** `{"error": "persona not found"}` or `{"error": "card not found"}`.
+
 ---
 
 ## Logs (server machine)
@@ -671,6 +778,12 @@ Missing log file → `[]`.
 | GET | `/api/theme` | requires-token |
 | POST | `/api/theme` | requires-token |
 | GET | `/api/personas` | requires-token |
+| POST | `/api/personas` | admin-only |
+| PUT | `/api/personas/<id>` | admin-only |
+| DELETE | `/api/personas/<id>` | admin-only |
+| POST | `/api/personas/<id>/cards` | admin-only |
+| PUT | `/api/personas/<id>/cards/<card_id>` | admin-only |
+| DELETE | `/api/personas/<id>/cards/<card_id>` | admin-only |
 | GET | `/api/pairing/pin` | admin-only |
 | GET | `/api/pairing/qr.svg` | admin-only |
 | POST | `/api/pairing/pin/regenerate` | admin-only |
@@ -692,6 +805,7 @@ Missing log file → `[]`.
 | POST | `/api/conversations/<conv_id>/archive` | requires-token |
 | DELETE | `/api/conversations/<conv_id>` | requires-token |
 | POST | `/api/chat` | requires-token |
+| POST | `/api/chat/reference` | requires-token |
 | GET | `/api/logs` | admin-only |
 | DELETE | `/api/logs` | admin-only |
 
