@@ -1623,18 +1623,21 @@ async function loadPairingInfo() {
   }
 }
 
-function fillFamilyPasswordStatus(isSet) {
+let familyPasswordSet = false;
+
+function fillFamilyPasswordStatus(isSet, opts = {}) {
   const status = el("familyPasswordStatus");
   const input = el("familyPasswordInput");
   if (!status || !input) return;
-  if (isSet) {
+  familyPasswordSet = Boolean(isSet);
+  if (familyPasswordSet) {
     status.textContent = "Set — enter a new password to change, or save an empty field to remove.";
     input.placeholder = "New family password";
   } else {
     status.textContent = "Not set";
     input.placeholder = "Set a family password";
   }
-  input.value = "";
+  if (opts.clearInput) input.value = "";
 }
 
 function renderPairedDevices(devices) {
@@ -1677,12 +1680,25 @@ el("regeneratePinBtn").addEventListener("click", async () => {
 
 el("saveFamilyPasswordBtn").addEventListener("click", async () => {
   const input = el("familyPasswordInput");
-  await api("/api/settings", {
-    method: "POST",
-    body: JSON.stringify({ family_password: (input.value || "") }),
-  });
-  input.value = "";
-  loadPairingInfo();
+  const status = el("familyPasswordStatus");
+  const btn = el("saveFamilyPasswordBtn");
+  const value = (input.value || "").trim();
+  if (!value && !familyPasswordSet) {
+    if (status) status.textContent = "Type a password, then click Save password.";
+    return;
+  }
+  btn.disabled = true;
+  try {
+    const data = await api("/api/settings", {
+      method: "POST",
+      body: JSON.stringify({ family_password: value }),
+    });
+    fillFamilyPasswordStatus(data.family_password_set, { clearInput: true });
+  } catch (err) {
+    if (status) status.textContent = err.message || "Could not save password.";
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 el("connectDeviceBtn").addEventListener("click", async () => {

@@ -710,6 +710,8 @@ def test_index_includes_pairing_gate_and_sidebar_toggle(client):
     assert "pairingClaimBody" in js
     assert "family_password" in js
     assert r"/^\d{4,8}$/" not in js
+    assert "Type a password, then click Save password." in js
+    assert "app.js?v=family-pw-1" in html
     assert "⚠ Not yet verified" in js
     assert "Quick reference" in js
     assert "/api/chat/reference" in js
