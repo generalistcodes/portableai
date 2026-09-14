@@ -281,16 +281,24 @@ Encodes `pairing_web_url`, not `pairing_uri`.
 
 **Auth:** LAN-open (this is how a phone pairs)
 
-**Request:**
+**Request** — send **either** a PIN **or** a family password, not both
+required:
 
 ```json
 { "pin": "123456", "device_name": "Jane’s iPhone" }
 ```
 
+```json
+{ "family_password": "house-key", "device_name": "Jane’s iPhone" }
+```
+
 | Field | Required | Notes |
 | --- | --- | --- |
-| `pin` | yes | Non-empty after strip. Else **400** `{"error": "pin is required"}`. |
+| `pin` | one of `pin` / `family_password` | Non-empty after strip uses the PIN path (existing behavior). |
+| `family_password` | one of `pin` / `family_password` | Used only when `pin` is omitted/empty. Does not expire, not single-use. |
 | `device_name` | no | Empty/omitted stores as `"Unnamed device"`. |
+
+If both `pin` and `family_password` are sent, **PIN wins**.
 
 **Success (200):**
 
@@ -298,12 +306,25 @@ Encodes `pairing_web_url`, not `pairing_uri`.
 { "device_token": "<32-char hex>" }
 ```
 
-**401** `{"error": "invalid or expired PIN"}` — wrong PIN, expired PIN,
-already consumed PIN, or lockout after 5 failed attempts (that also
+A password-issued token is indistinguishable from a PIN-issued one:
+same `Authorization: Bearer …` header, same requires-token access, same
+admin-only 403s, same per-device conversation isolation.
+
+**400** `{"error": "pin or family_password is required"}` — both empty.
+
+**401** `{"error": "invalid or expired PIN"}` — wrong / expired /
+already consumed PIN, or PIN lockout after 5 failed attempts (that also
 invalidates the PIN).
 
+**401** `{"error": "invalid family password"}` — no password configured,
+or a wrong password that has not yet hit the per-source limit.
+
+**429** `{"error": "too many failed password attempts"}` — 5 wrong
+password guesses from the same client IP. Other IPs are unaffected.
+This counter is **not** shared with the PIN lockout.
+
 Store `device_token` and send it as `Authorization: Bearer …` on every
-requires-token call. The PIN is single-use.
+requires-token call. The PIN is single-use. The family password is not.
 
 ### `GET /api/pairing/devices`
 
@@ -487,8 +508,9 @@ baked-in `APP_VERSION` / `CATALOG_VERSION`.
 
 ## Settings
 
-Keys in `DEFAULT_SETTINGS` (GET returns all four; POST only writes keys
-that exist here and are present in the body):
+Keys in `DEFAULT_SETTINGS` (GET returns these four plus
+`family_password_set`; POST only writes the four keys below that are
+present in the body, plus the write-only `family_password` field):
 
 | Key | Type | Default |
 | --- | --- | --- |
@@ -497,22 +519,34 @@ that exist here and are present in the body):
 | `update_check_url` | string | `""` |
 | `auto_check_updates` | boolean | `false` |
 
+`family_password` is **not** stored in `settings.json`. It lives in
+`pairing.json` as a hash. GET never echoes the secret.
+
+| Extra GET field | Type | Default |
+| --- | --- | --- |
+| `family_password_set` | boolean | `false` |
+
 On Linux, `run.py` can override the Ollama URL used by this process
-without rewriting `settings.json`. GET still returns the file contents.
+without rewriting `settings.json`. GET still returns the file contents
+for the four keys above.
 
 ### `GET /api/settings`
 
 **Auth:** admin-only
 
-**Success (200):** the four-key object above.
+**Success (200):** the four-key object plus `family_password_set`.
 
 ### `POST /api/settings`
 
-**Auth:** admin-only
+**Auth:** admin-only (localhost only — a valid device token is **403**)
 
-**Request:** any subset of those keys. Unknown keys are ignored.
+**Request:** any subset of the four `DEFAULT_SETTINGS` keys, and/or
+write-only `family_password` (string; empty or `null` clears it).
+Unknown keys are ignored. Non-string `family_password` is **400**
+`{"error": "family_password must be a string"}`.
 
-**Success (200):** the full saved settings object (same shape as GET).
+**Success (200):** the full GET payload (`family_password_set` reflects
+the new value; the password itself is never returned).
 
 ---
 

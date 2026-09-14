@@ -182,7 +182,7 @@
 
       <div class="settings-nav-group">
         <div class="settings-nav-group-label">Connect</div>
-        <button type="button" class="settings-nav-item" data-pane="pairing" data-search="phone pairing pin lan device ios qr">
+        <button type="button" class="settings-nav-item" data-pane="pairing" data-search="phone pairing pin lan device ios qr family password">
           <svg class="settings-nav-icon" viewBox="0 0 24 24" aria-hidden="true">
             <rect x="7" y="2" width="10" height="20" rx="2"/>
             <path d="M11 18h2"/>
@@ -382,8 +382,23 @@
           </div>
           <div class="setting-item setting-item-stack">
             <div class="setting-item-info">
+              <div class="setting-item-name">Family password</div>
+              <div class="setting-item-description">
+                Optional. Phones can pair with this password instead of a PIN.
+                It does not expire and can be reused by multiple devices.
+                Leave empty and save to remove it.
+              </div>
+            </div>
+            <p id="familyPasswordStatus" class="muted small">Not set</p>
+            <div class="pairing-pin-row">
+              <input id="familyPasswordInput" class="setting-input setting-input-full" type="password" autocomplete="new-password" placeholder="Set a family password">
+              <button id="saveFamilyPasswordBtn" class="primary-btn" type="button">Save password</button>
+            </div>
+          </div>
+          <div class="setting-item setting-item-stack">
+            <div class="setting-item-info">
               <div class="setting-item-name">Paired devices</div>
-              <div class="setting-item-description">Revoke a device to require a new PIN the next time it connects.</div>
+              <div class="setting-item-description">Revoke a device to require a new PIN or family password the next time it connects.</div>
             </div>
             <div id="pairedDevicesList" class="models-table"></div>
           </div>

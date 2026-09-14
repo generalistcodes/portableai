@@ -1615,6 +1615,26 @@ async function loadPairingInfo() {
   } catch {
     el("pairedDevicesList").innerHTML = '<p class="muted small">Could not load paired devices.</p>';
   }
+  try {
+    const settings = await api("/api/settings");
+    fillFamilyPasswordStatus(settings.family_password_set);
+  } catch {
+    fillFamilyPasswordStatus(false);
+  }
+}
+
+function fillFamilyPasswordStatus(isSet) {
+  const status = el("familyPasswordStatus");
+  const input = el("familyPasswordInput");
+  if (!status || !input) return;
+  if (isSet) {
+    status.textContent = "Set — enter a new password to change, or save an empty field to remove.";
+    input.placeholder = "New family password";
+  } else {
+    status.textContent = "Not set";
+    input.placeholder = "Set a family password";
+  }
+  input.value = "";
 }
 
 function renderPairedDevices(devices) {
@@ -1645,13 +1665,23 @@ function renderPairedDevices(devices) {
 el("pairedDevicesList").addEventListener("click", async (e) => {
   const btn = e.target.closest(".icon-btn[data-token]");
   if (!btn) return;
-  if (!window.confirm("Revoke this device? It will need to pair again with a new PIN.")) return;
+    if (!window.confirm("Revoke this device? It will need to pair again with a new PIN or the family password.")) return;
   await api(`/api/pairing/devices/${btn.dataset.token}`, { method: "DELETE" });
   loadPairingInfo();
 });
 
 el("regeneratePinBtn").addEventListener("click", async () => {
   await api("/api/pairing/pin/regenerate", { method: "POST" });
+  loadPairingInfo();
+});
+
+el("saveFamilyPasswordBtn").addEventListener("click", async () => {
+  const input = el("familyPasswordInput");
+  await api("/api/settings", {
+    method: "POST",
+    body: JSON.stringify({ family_password: (input.value || "") }),
+  });
+  input.value = "";
   loadPairingInfo();
 });
 

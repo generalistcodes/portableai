@@ -475,13 +475,29 @@ def api_pairing_pin_regenerate():
 def api_pairing_claim():
     body = request.get_json(force=True) or {}
     pin = (body.get("pin") or "").strip()
+    family_password = (body.get("family_password") or "")
+    if not isinstance(family_password, str):
+        family_password = str(family_password)
+    family_password = family_password.strip()
     device_name = (body.get("device_name") or "").strip()
-    if not pin:
-        return jsonify({"error": "pin is required"}), 400
-    token = pairing_store.claim_pin(PAIRING_FILE, pin, device_name)
-    if not token:
-        return jsonify({"error": "invalid or expired PIN"}), 401
-    return jsonify({"device_token": token})
+    if pin:
+        token = pairing_store.claim_pin(PAIRING_FILE, pin, device_name)
+        if not token:
+            return jsonify({"error": "invalid or expired PIN"}), 401
+        return jsonify({"device_token": token})
+    if family_password:
+        result = pairing_store.claim_family_password(
+            PAIRING_FILE,
+            family_password,
+            device_name,
+            source=_normalize_ip(request.remote_addr),
+        )
+        if result["status"] == "locked":
+            return jsonify({"error": "too many failed password attempts"}), 429
+        if result["status"] != "ok":
+            return jsonify({"error": "invalid family password"}), 401
+        return jsonify({"device_token": result["token"]})
+    return jsonify({"error": "pin or family_password is required"}), 400
 
 
 @app.route("/api/pairing/devices", methods=["GET"])
@@ -508,7 +524,14 @@ def _load_settings() -> dict:
 
 def _save_settings(settings: dict) -> None:
     DATA_DIR.mkdir(exist_ok=True)
-    SETTINGS_FILE.write_text(json.dumps(settings, indent=2))
+    to_write = {key: settings[key] for key in DEFAULT_SETTINGS}
+    SETTINGS_FILE.write_text(json.dumps(to_write, indent=2))
+
+
+def _settings_payload() -> dict:
+    payload = _load_settings()
+    payload["family_password_set"] = pairing_store.family_password_is_set(PAIRING_FILE)
+    return payload
 
 
 def _load_theme() -> str:
@@ -1106,18 +1129,28 @@ def post_theme():
 
 @app.route("/api/settings", methods=["GET"])
 def get_settings():
-    return jsonify(_load_settings())
+    return jsonify(_settings_payload())
 
 
 @app.route("/api/settings", methods=["POST"])
 def post_settings():
     body = request.get_json(force=True) or {}
+    password_to_set = None
+    if "family_password" in body:
+        value = body.get("family_password")
+        if value is None:
+            value = ""
+        if not isinstance(value, str):
+            return jsonify({"error": "family_password must be a string"}), 400
+        password_to_set = value
     settings = _load_settings()
     for key in DEFAULT_SETTINGS:
         if key in body:
             settings[key] = body[key]
     _save_settings(settings)
-    return jsonify(settings)
+    if password_to_set is not None:
+        pairing_store.set_family_password(PAIRING_FILE, password_to_set)
+    return jsonify(_settings_payload())
 
 
 def _owns_conversation(conv: dict, identity: dict) -> bool:

@@ -188,3 +188,104 @@ def test_multiple_devices_can_be_paired(tmp_path):
     assert store.is_valid_token(path, token1) is True
     assert store.is_valid_token(path, token2) is True
     assert len(store.list_devices(path)) == 2
+
+
+def test_family_password_unset_by_default(tmp_path):
+    path = tmp_path / "pairing.json"
+    assert store.family_password_is_set(path) is False
+    result = store.claim_family_password(path, "secret", "Phone", "192.168.1.50")
+    assert result["status"] == "invalid"
+    assert result["token"] is None
+
+
+def test_family_password_claim_issues_token_without_consuming_pin(tmp_path):
+    path = tmp_path / "pairing.json"
+    pin = store.generate_pin(path)
+    store.set_family_password(path, "family-secret")
+    first = store.claim_family_password(path, "family-secret", "iPhone", "192.168.1.50")
+    second = store.claim_family_password(path, "family-secret", "iPad", "192.168.1.51")
+    assert first["status"] == "ok"
+    assert second["status"] == "ok"
+    assert first["token"] != second["token"]
+    assert store.is_valid_token(path, first["token"]) is True
+    assert store.is_valid_token(path, second["token"]) is True
+    assert store.get_current_pin(path)["pin"] == pin
+    assert store.claim_pin(path, pin, "PIN device") is not None
+
+
+def test_family_password_wrong_does_not_touch_pin_lockout(tmp_path):
+    path = tmp_path / "pairing.json"
+    pin = store.generate_pin(path)
+    store.set_family_password(path, "family-secret")
+    for _ in range(3):
+        assert store.claim_family_password(path, "nope", "attacker", "192.168.1.50")["status"] == "invalid"
+    data = json.loads(path.read_text())
+    assert data["failed_attempts"] == 0
+    assert data["current_pin"] == pin
+    assert store.claim_pin(path, pin, "legit") is not None
+
+
+def test_pin_failures_do_not_lock_family_password(tmp_path):
+    path = tmp_path / "pairing.json"
+    pin = store.generate_pin(path)
+    store.set_family_password(path, "family-secret")
+    for _ in range(5):
+        assert store.claim_pin(path, "000000", "attacker") is None
+    result = store.claim_family_password(path, "family-secret", "Phone", "192.168.1.50")
+    assert result["status"] == "ok"
+    assert store.get_current_pin(path) is None
+
+
+def test_family_password_rate_limit_is_per_source(tmp_path):
+    path = tmp_path / "pairing.json"
+    store.set_family_password(path, "family-secret")
+    locked_source = "192.168.1.50"
+    other_source = "192.168.1.51"
+    statuses = [
+        store.claim_family_password(path, "wrong", "attacker", locked_source)["status"]
+        for _ in range(5)
+    ]
+    assert statuses[:4] == ["invalid"] * 4
+    assert statuses[4] == "locked"
+    still_locked = store.claim_family_password(path, "family-secret", "attacker", locked_source)
+    assert still_locked["status"] == "locked"
+    other = store.claim_family_password(path, "family-secret", "Other phone", other_source)
+    assert other["status"] == "ok"
+    data = json.loads(path.read_text())
+    assert data["failed_attempts"] == 0
+
+
+def test_family_password_lockout_expires(tmp_path):
+    path = tmp_path / "pairing.json"
+    store.set_family_password(path, "family-secret")
+    now = 1_000.0
+    for _ in range(5):
+        store.claim_family_password(
+            path, "wrong", "attacker", "192.168.1.50", lockout_seconds=60, now=now
+        )
+    locked = store.claim_family_password(
+        path, "family-secret", "Phone", "192.168.1.50", lockout_seconds=60, now=now + 10
+    )
+    assert locked["status"] == "locked"
+    after = store.claim_family_password(
+        path, "family-secret", "Phone", "192.168.1.50", lockout_seconds=60, now=now + 61
+    )
+    assert after["status"] == "ok"
+
+
+def test_clearing_family_password_stops_claims(tmp_path):
+    path = tmp_path / "pairing.json"
+    store.set_family_password(path, "family-secret")
+    store.set_family_password(path, "")
+    assert store.family_password_is_set(path) is False
+    result = store.claim_family_password(path, "family-secret", "Phone", "192.168.1.50")
+    assert result["status"] == "invalid"
+
+
+def test_family_password_is_hashed_on_disk(tmp_path):
+    path = tmp_path / "pairing.json"
+    store.set_family_password(path, "family-secret")
+    raw = path.read_text()
+    assert "family-secret" not in raw
+    data = json.loads(raw)
+    assert data["family_password_hash"]
