@@ -38,7 +38,11 @@ def _ensure_dependencies() -> None:
         return
 
     missing = []
-    for module_name, package_name in (("flask", "flask"), ("requests", "requests")):
+    for module_name, package_name in (
+        ("flask", "flask"),
+        ("requests", "requests"),
+        ("zeroconf", "zeroconf"),
+    ):
         try:
             __import__(module_name)
         except ImportError:
@@ -118,7 +122,10 @@ def main() -> None:
 
     server.ensure_port_available(args.port)
 
+    from mdns_broadcast import MdnsAdvertiser  # noqa: E402
+
     runtime = None
+    advertiser = MdnsAdvertiser()
 
     def _stop_runtime() -> None:
         nonlocal runtime
@@ -128,11 +135,18 @@ def main() -> None:
         runtime = None
         server.set_managed_ollama_base_url(None)
 
-    atexit.register(_stop_runtime)
+    def _cleanup() -> None:
+        # Drop the mDNS advertisement before stopping Ollama. A stale
+        # broadcast is worse than none: a phone would think the server
+        # is still reachable.
+        advertiser.stop()
+        _stop_runtime()
+
+    atexit.register(_cleanup)
     previous_sigterm = signal.getsignal(signal.SIGTERM)
 
     def _on_sigterm(signum, frame):
-        _stop_runtime()
+        _cleanup()
         if callable(previous_sigterm):
             previous_sigterm(signum, frame)
         raise SystemExit(0)
@@ -152,11 +166,12 @@ def main() -> None:
                 "Note: PortableAI does not bundle Ollama on this OS yet (Linux/macOS only). "
                 "Install Ollama separately: https://ollama.com/download"
             )
+        advertiser.start(args.port, version=server.APP_VERSION)
         server.run_app(args.port)
     except KeyboardInterrupt:
         print("\nShutting down.")
     finally:
-        _stop_runtime()
+        _cleanup()
 
 
 if __name__ == "__main__":
