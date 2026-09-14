@@ -1712,16 +1712,26 @@ function hidePairingGate() {
   el("pairingGate").classList.add("hidden");
 }
 
-async function attemptPairing(pin, deviceName) {
+async function attemptPairing(secret, deviceName) {
   const resp = await fetch("/api/pairing/claim", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ pin, device_name: deviceName || guessDeviceName() }),
+    body: JSON.stringify(pairingClaimBody(secret, deviceName)),
   });
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) throw new Error(data.error || "Pairing failed");
   if (!data.device_token) throw new Error("pairing did not return a token");
   setDeviceToken(data.device_token);
+}
+
+function pairingClaimBody(secret, deviceName) {
+  const trimmed = (secret || "").trim();
+  const body = { device_name: deviceName || guessDeviceName() };
+  // Backend: non-empty `pin` uses the PIN path only. Password is a
+  // separate `family_password` field, used only when `pin` is empty.
+  if (/^\d{6}$/.test(trimmed)) body.pin = trimmed;
+  else body.family_password = trimmed;
+  return body;
 }
 
 async function tryAutoPairFromUrl() {
@@ -1734,7 +1744,7 @@ async function tryAutoPairFromUrl() {
     return true;
   } catch (err) {
     history.replaceState(null, "", location.pathname);
-    showPairingGate(`Couldn't pair automatically (${err.message}). Enter the PIN manually below.`);
+    showPairingGate(`Couldn't pair automatically (${err.message}). Enter the PIN or family password below.`);
     return false;
   }
 }
@@ -1750,18 +1760,18 @@ async function reloadAfterPairing() {
 
 el("pairingGateForm").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const pin = el("pairingGatePin").value.trim();
+  const secret = el("pairingGatePin").value.trim();
   const name = el("pairingGateName").value.trim() || guessDeviceName();
   const errEl = el("pairingGateError");
   const btn = el("pairingGateSubmit");
-  if (!/^\d{4,8}$/.test(pin)) {
-    errEl.textContent = "Enter the 6-digit PIN shown in Settings → Phone pairing.";
+  if (!secret) {
+    errEl.textContent = "Enter the PIN or family password shown in Settings → Phone pairing.";
     return;
   }
   btn.disabled = true;
   errEl.textContent = "";
   try {
-    await attemptPairing(pin, name);
+    await attemptPairing(secret, name);
     await reloadAfterPairing();
   } catch (err) {
     errEl.textContent = err.message || "Pairing failed.";

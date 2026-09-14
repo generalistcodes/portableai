@@ -1577,10 +1577,7 @@ input.toggle:checked::after { transform: translateX(18px); }
   min-height: 0;
 }
 #pairingGatePin {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 22px;
-  letter-spacing: 0.2em;
-  text-align: center;
+  font-size: 16px;
 }
 .pairing-error {
   color: var(--danger);

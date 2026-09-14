@@ -469,10 +469,10 @@
     </div>
     <form id="pairingGateForm" class="pairing-form">
       <div class="modal-body">
-        <p class="muted">This browser isn’t paired yet. On the computer running PortableAI, open Settings → Phone pairing and enter that 6-digit PIN here.</p>
+        <p class="muted">This browser isn’t paired yet. On the computer running PortableAI, open Settings → Phone pairing and enter the 6-digit PIN or the family password here.</p>
         <label class="field">
-          <span>Pairing PIN</span>
-          <input id="pairingGatePin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" placeholder="000000" required>
+          <span>PIN or password</span>
+          <input id="pairingGatePin" type="text" autocomplete="off" placeholder="PIN or password" required>
         </label>
         <label class="field">
           <span>This device’s name (optional)</span>

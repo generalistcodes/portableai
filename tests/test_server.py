@@ -692,6 +692,11 @@ def test_claim_pin_then_token_unlocks_personas(client, app):
 def test_index_includes_pairing_gate_and_sidebar_toggle(client):
     html = client.get("/").get_data(as_text=True)
     assert 'id="pairingGate"' in html
+    pin_input = html.split('id="pairingGatePin"', 1)[1].split(">", 1)[0]
+    assert "inputmode" not in pin_input
+    assert "maxlength" not in pin_input
+    assert "pattern=" not in pin_input
+    assert "PIN or password" in html
     assert 'id="sidebarToggle"' in html
     assert 'id="menuBtn"' in html
     assert 'id="deviceCountPill"' in html
@@ -702,6 +707,9 @@ def test_index_includes_pairing_gate_and_sidebar_toggle(client):
     assert 'id="saveFamilyPasswordBtn"' in html
     assert "Add persona" in html
     js = client.get("/app.js").data.decode()
+    assert "pairingClaimBody" in js
+    assert "family_password" in js
+    assert r"/^\d{4,8}$/" not in js
     assert "⚠ Not yet verified" in js
     assert "Quick reference" in js
     assert "/api/chat/reference" in js
