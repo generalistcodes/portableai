@@ -692,14 +692,26 @@ def test_claim_pin_then_token_unlocks_personas(client, app):
 def test_index_includes_pairing_gate_and_sidebar_toggle(client):
     html = client.get("/").get_data(as_text=True)
     assert 'id="pairingGate"' in html
+    pin_input = html.split('id="pairingGatePin"', 1)[1].split(">", 1)[0]
+    assert "inputmode" not in pin_input
+    assert "maxlength" not in pin_input
+    assert "pattern=" not in pin_input
+    assert "PIN or password" in html
     assert 'id="sidebarToggle"' in html
     assert 'id="menuBtn"' in html
     assert 'id="deviceCountPill"' in html
     assert 'id="connectDeviceBtn"' in html
     assert 'id="cardChips"' in html
     assert 'id="pane-personas"' in html
+    assert 'id="familyPasswordInput"' in html
+    assert 'id="saveFamilyPasswordBtn"' in html
     assert "Add persona" in html
     js = client.get("/app.js").data.decode()
+    assert "pairingClaimBody" in js
+    assert "family_password" in js
+    assert r"/^\d{4,8}$/" not in js
+    assert "Type a password, then click Save password." in js
+    assert "app.js?v=family-pw-1" in html
     assert "⚠ Not yet verified" in js
     assert "Quick reference" in js
     assert "/api/chat/reference" in js
@@ -844,7 +856,7 @@ def test_pairing_claim_wrong_pin_from_lan_is_401(client):
     assert resp.status_code == 401
 
 
-def test_pairing_claim_requires_pin_field(client):
+def test_pairing_claim_requires_pin_or_password_field(client):
     resp = client.post(
         "/api/pairing/claim",
         data=json.dumps({"device_name": "No pin given"}),
@@ -852,6 +864,7 @@ def test_pairing_claim_requires_pin_field(client):
         environ_overrides=LAN_ENV,
     )
     assert resp.status_code == 400
+    assert resp.get_json()["error"] == "pin or family_password is required"
 
 
 def test_paired_device_appears_in_devices_list_and_can_be_revoked(client, app):
@@ -871,6 +884,212 @@ def test_paired_device_appears_in_devices_list_and_can_be_revoked(client, app):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert lan_resp.status_code == 401
+
+
+def test_settings_reports_family_password_unset_by_default(client):
+    data = client.get("/api/settings").get_json()
+    assert data["family_password_set"] is False
+    assert "family_password" not in data
+
+
+def test_family_password_claim_rejected_when_unset(client):
+    resp = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"family_password": "house-key", "device_name": "Phone"}),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+    )
+    assert resp.status_code == 401
+    assert resp.get_json()["error"] == "invalid family password"
+
+
+def test_pin_claim_still_works_when_family_password_unset(client):
+    pin = client.get("/api/pairing/pin").get_json()["pin"]
+    resp = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"pin": pin, "device_name": "PIN phone"}),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+    )
+    assert resp.status_code == 200
+    assert len(resp.get_json()["device_token"]) == 32
+
+
+def test_family_password_set_from_localhost_not_lan(client, app):
+    posted = client.post(
+        "/api/settings",
+        data=json.dumps({"family_password": "house-key"}),
+        content_type="application/json",
+    )
+    assert posted.status_code == 200
+    assert posted.get_json()["family_password_set"] is True
+    assert "house-key" not in posted.get_data(as_text=True)
+    assert "house-key" not in app.SETTINGS_FILE.read_text()
+    assert "house-key" not in app.PAIRING_FILE.read_text()
+
+    env, headers = _lan_auth_headers(client, app)
+    lan = client.post(
+        "/api/settings",
+        data=json.dumps({"family_password": "hacked"}),
+        content_type="application/json",
+        environ_overrides=env,
+        headers=headers,
+    )
+    assert lan.status_code == 403
+    claim = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"family_password": "house-key", "device_name": "Kitchen iPad"}),
+        content_type="application/json",
+        environ_overrides={"REMOTE_ADDR": "192.168.1.80"},
+    )
+    assert claim.status_code == 200
+    stolen = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"family_password": "hacked", "device_name": "Attacker"}),
+        content_type="application/json",
+        environ_overrides={"REMOTE_ADDR": "192.168.1.81"},
+    )
+    assert stolen.status_code == 401
+
+
+def test_family_password_pairs_multiple_devices_without_consuming_pin(client, app):
+    pin = pairing_store.generate_pin(app.PAIRING_FILE)
+    client.post(
+        "/api/settings",
+        data=json.dumps({"family_password": "house-key"}),
+        content_type="application/json",
+    )
+    first = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"family_password": "house-key", "device_name": "Phone A"}),
+        content_type="application/json",
+        environ_overrides={"REMOTE_ADDR": "192.168.1.50"},
+    )
+    second = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"family_password": "house-key", "device_name": "Phone B"}),
+        content_type="application/json",
+        environ_overrides={"REMOTE_ADDR": "192.168.1.51"},
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+    token_a = first.get_json()["device_token"]
+    token_b = second.get_json()["device_token"]
+    assert token_a != token_b
+    pin_claim = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"pin": pin, "device_name": "PIN phone"}),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+    )
+    assert pin_claim.status_code == 200
+    assert pin_claim.get_json()["device_token"] not in (token_a, token_b)
+
+
+def test_family_password_wrong_attempts_are_rate_limited_per_source(client, app):
+    client.post(
+        "/api/settings",
+        data=json.dumps({"family_password": "house-key"}),
+        content_type="application/json",
+    )
+    attacker = {"REMOTE_ADDR": "192.168.1.50"}
+    other = {"REMOTE_ADDR": "192.168.1.51"}
+    for _ in range(4):
+        resp = client.post(
+            "/api/pairing/claim",
+            data=json.dumps({"family_password": "nope", "device_name": "Attacker"}),
+            content_type="application/json",
+            environ_overrides=attacker,
+        )
+        assert resp.status_code == 401
+    locked = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"family_password": "nope", "device_name": "Attacker"}),
+        content_type="application/json",
+        environ_overrides=attacker,
+    )
+    assert locked.status_code == 429
+    assert locked.get_json()["error"] == "too many failed password attempts"
+    still = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"family_password": "house-key", "device_name": "Attacker"}),
+        content_type="application/json",
+        environ_overrides=attacker,
+    )
+    assert still.status_code == 429
+    ok = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"family_password": "house-key", "device_name": "Other phone"}),
+        content_type="application/json",
+        environ_overrides=other,
+    )
+    assert ok.status_code == 200
+
+
+def test_password_issued_token_matches_pin_issued_permissions(client, app):
+    """Same admin-gating and per-device isolation regardless of claim path."""
+    pin_token = _pair_device(app, "PIN phone")
+    client.post(
+        "/api/settings",
+        data=json.dumps({"family_password": "house-key"}),
+        content_type="application/json",
+    )
+    password_claim = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"family_password": "house-key", "device_name": "Password phone"}),
+        content_type="application/json",
+        environ_overrides={"REMOTE_ADDR": "192.168.1.60"},
+    )
+    password_token = password_claim.get_json()["device_token"]
+    pin_env = {"REMOTE_ADDR": "192.168.1.50"}
+    pw_env = {"REMOTE_ADDR": "192.168.1.60"}
+    pin_headers = _lan_headers(pin_token)
+    pw_headers = _lan_headers(password_token)
+
+    for env, headers in ((pin_env, pin_headers), (pw_env, pw_headers)):
+        personas = client.get("/api/personas", environ_overrides=env, headers=headers)
+        assert personas.status_code == 200
+        settings = client.get("/api/settings", environ_overrides=env, headers=headers)
+        assert settings.status_code == 403
+        logs = client.get("/api/logs", environ_overrides=env, headers=headers)
+        assert logs.status_code == 403
+        create = client.post(
+            "/api/personas",
+            data=json.dumps({
+                "display_name": "Hacked",
+                "base_model": "llama3.2:3b",
+                "system_prompt": "nope",
+            }),
+            content_type="application/json",
+            environ_overrides=env,
+            headers=headers,
+        )
+        assert create.status_code == 403
+
+    conv_pin = client.post(
+        "/api/conversations",
+        data=json.dumps({"persona": "no-nonsense-mentor"}),
+        content_type="application/json",
+        environ_overrides=pin_env,
+        headers=pin_headers,
+    ).get_json()["id"]
+    conv_pw = client.post(
+        "/api/conversations",
+        data=json.dumps({"persona": "eli5-explainer"}),
+        content_type="application/json",
+        environ_overrides=pw_env,
+        headers=pw_headers,
+    ).get_json()["id"]
+    list_pin = client.get("/api/conversations", environ_overrides=pin_env, headers=pin_headers).get_json()
+    list_pw = client.get("/api/conversations", environ_overrides=pw_env, headers=pw_headers).get_json()
+    assert {c["id"] for c in list_pin} == {conv_pin}
+    assert {c["id"] for c in list_pw} == {conv_pw}
+    assert client.get(
+        f"/api/conversations/{conv_pin}", environ_overrides=pw_env, headers=pw_headers
+    ).status_code == 404
+    assert client.get(
+        f"/api/conversations/{conv_pw}", environ_overrides=pin_env, headers=pin_headers
+    ).status_code == 404
 
 
 # ---------- Per-device data isolation ----------

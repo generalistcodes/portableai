@@ -1615,6 +1615,29 @@ async function loadPairingInfo() {
   } catch {
     el("pairedDevicesList").innerHTML = '<p class="muted small">Could not load paired devices.</p>';
   }
+  try {
+    const settings = await api("/api/settings");
+    fillFamilyPasswordStatus(settings.family_password_set);
+  } catch {
+    fillFamilyPasswordStatus(false);
+  }
+}
+
+let familyPasswordSet = false;
+
+function fillFamilyPasswordStatus(isSet, opts = {}) {
+  const status = el("familyPasswordStatus");
+  const input = el("familyPasswordInput");
+  if (!status || !input) return;
+  familyPasswordSet = Boolean(isSet);
+  if (familyPasswordSet) {
+    status.textContent = "Set — enter a new password to change, or save an empty field to remove.";
+    input.placeholder = "New family password";
+  } else {
+    status.textContent = "Not set";
+    input.placeholder = "Set a family password";
+  }
+  if (opts.clearInput) input.value = "";
 }
 
 function renderPairedDevices(devices) {
@@ -1645,7 +1668,7 @@ function renderPairedDevices(devices) {
 el("pairedDevicesList").addEventListener("click", async (e) => {
   const btn = e.target.closest(".icon-btn[data-token]");
   if (!btn) return;
-  if (!window.confirm("Revoke this device? It will need to pair again with a new PIN.")) return;
+    if (!window.confirm("Revoke this device? It will need to pair again with a new PIN or the family password.")) return;
   await api(`/api/pairing/devices/${btn.dataset.token}`, { method: "DELETE" });
   loadPairingInfo();
 });
@@ -1653,6 +1676,29 @@ el("pairedDevicesList").addEventListener("click", async (e) => {
 el("regeneratePinBtn").addEventListener("click", async () => {
   await api("/api/pairing/pin/regenerate", { method: "POST" });
   loadPairingInfo();
+});
+
+el("saveFamilyPasswordBtn").addEventListener("click", async () => {
+  const input = el("familyPasswordInput");
+  const status = el("familyPasswordStatus");
+  const btn = el("saveFamilyPasswordBtn");
+  const value = (input.value || "").trim();
+  if (!value && !familyPasswordSet) {
+    if (status) status.textContent = "Type a password, then click Save password.";
+    return;
+  }
+  btn.disabled = true;
+  try {
+    const data = await api("/api/settings", {
+      method: "POST",
+      body: JSON.stringify({ family_password: value }),
+    });
+    fillFamilyPasswordStatus(data.family_password_set, { clearInput: true });
+  } catch (err) {
+    if (status) status.textContent = err.message || "Could not save password.";
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 el("connectDeviceBtn").addEventListener("click", async () => {
@@ -1682,16 +1728,26 @@ function hidePairingGate() {
   el("pairingGate").classList.add("hidden");
 }
 
-async function attemptPairing(pin, deviceName) {
+async function attemptPairing(secret, deviceName) {
   const resp = await fetch("/api/pairing/claim", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ pin, device_name: deviceName || guessDeviceName() }),
+    body: JSON.stringify(pairingClaimBody(secret, deviceName)),
   });
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) throw new Error(data.error || "Pairing failed");
   if (!data.device_token) throw new Error("pairing did not return a token");
   setDeviceToken(data.device_token);
+}
+
+function pairingClaimBody(secret, deviceName) {
+  const trimmed = (secret || "").trim();
+  const body = { device_name: deviceName || guessDeviceName() };
+  // Backend: non-empty `pin` uses the PIN path only. Password is a
+  // separate `family_password` field, used only when `pin` is empty.
+  if (/^\d{6}$/.test(trimmed)) body.pin = trimmed;
+  else body.family_password = trimmed;
+  return body;
 }
 
 async function tryAutoPairFromUrl() {
@@ -1704,7 +1760,7 @@ async function tryAutoPairFromUrl() {
     return true;
   } catch (err) {
     history.replaceState(null, "", location.pathname);
-    showPairingGate(`Couldn't pair automatically (${err.message}). Enter the PIN manually below.`);
+    showPairingGate(`Couldn't pair automatically (${err.message}). Enter the PIN or family password below.`);
     return false;
   }
 }
@@ -1720,18 +1776,18 @@ async function reloadAfterPairing() {
 
 el("pairingGateForm").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const pin = el("pairingGatePin").value.trim();
+  const secret = el("pairingGatePin").value.trim();
   const name = el("pairingGateName").value.trim() || guessDeviceName();
   const errEl = el("pairingGateError");
   const btn = el("pairingGateSubmit");
-  if (!/^\d{4,8}$/.test(pin)) {
-    errEl.textContent = "Enter the 6-digit PIN shown in Settings → Phone pairing.";
+  if (!secret) {
+    errEl.textContent = "Enter the PIN or family password shown in Settings → Phone pairing.";
     return;
   }
   btn.disabled = true;
   errEl.textContent = "";
   try {
-    await attemptPairing(pin, name);
+    await attemptPairing(secret, name);
     await reloadAfterPairing();
   } catch (err) {
     errEl.textContent = err.message || "Pairing failed.";
