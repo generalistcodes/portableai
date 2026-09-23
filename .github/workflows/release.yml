@@ -1,0 +1,210 @@
+name: Release
+
+# Unsigned macOS note: this workflow does not sign or notarize the .dmg.
+# Doing that requires an Apple Developer Program membership ($99/year) and
+# a signing certificate stored as GitHub secrets. Those secrets are not
+# assumed to exist; the macOS job ships an unsigned, unnotarized disk image.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    name: Linux AppImage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build deps
+        run: pip install -r requirements-dev.txt
+
+      - name: PyInstaller
+        run: pyinstaller portableai.spec
+
+      - name: Smoke-test binary
+        run: ./dist/portableai --help
+
+      - name: Wrap AppImage
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: bash packaging/linux/make_appimage.sh
+
+      - name: Smoke-test AppImage
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          ARCH="$(uname -m)"
+          image="dist/PortableAI-${VERSION}-linux-${ARCH}.AppImage"
+          test -f "$image"
+          chmod +x "$image"
+          "$image" --appimage-extract-and-run --help
+          cp "$image" "dist/PortableAI-linux-${ARCH}.AppImage"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: dist/PortableAI-*.AppImage
+          if-no-files-found: error
+
+  build-windows:
+    name: Windows exe (incomplete)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build deps
+        run: pip install -r requirements-dev.txt
+
+      - name: PyInstaller
+        run: pyinstaller portableai.spec
+
+      - name: Smoke-test exe
+        shell: bash
+        run: ./dist/portableai.exe --help
+
+      - name: Record platform gaps
+        shell: bash
+        run: |
+          cat packaging/windows/INCOMPLETE.txt
+          echo "::warning::Windows package is incomplete: no vendored Ollama (src/ollama_runtime.py is Linux/macOS only) and no Windows branch in ui/server.py _enumerate_lan_ips (falls through to Linux ip/hostname -I)."
+          mkdir -p dist/windows
+          cp dist/portableai.exe "dist/windows/PortableAI-${GITHUB_REF_NAME}-windows-x64.exe"
+          cp dist/portableai.exe "dist/windows/PortableAI-windows-x86_64.exe"
+          cp packaging/windows/INCOMPLETE.txt "dist/windows/PortableAI-${GITHUB_REF_NAME}-windows-INCOMPLETE.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-exe
+          path: dist/windows/*
+          if-no-files-found: error
+
+  build-macos:
+    name: macOS DMG (unsigned)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build deps
+        run: |
+          pip install -r requirements-dev.txt
+          pip install dmgbuild
+
+      - name: Generate branding icons
+        run: python branding/generate_icons.py
+
+      - name: PyInstaller
+        run: pyinstaller portableai.spec
+
+      - name: Smoke-test binary
+        run: ./dist/portableai --help
+
+      - name: Wrap unsigned DMG
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: bash packaging/macos/make_dmg.sh
+
+      - name: Stable-named DMG copy
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          ARCH="$(uname -m)"
+          src="dist/PortableAI-${VERSION}-macos-${ARCH}.dmg"
+          test -f "$src"
+          cp "$src" "dist/PortableAI-macos-${ARCH}.dmg"
+
+      - name: Note unsigned / unnotarized
+        run: |
+          echo "::notice::macOS DMG is unsigned and unnotarized. Gatekeeper will block until the user allows it. Apple Developer signing secrets were not configured (paid \$99/year program; not assumed)."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist/PortableAI-*.dmg
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    needs: [build-linux, build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Build release notes
+        run: |
+          {
+            echo "PortableAI \`${GITHUB_REF_NAME}\`"
+            echo
+            echo "Automated multi-OS packages. Binaries are attached here, not committed to the repo."
+            echo
+            echo "## Packages"
+            echo "- **Linux:** AppImage (PyInstaller + appimagetool). Complete packaged path for this OS."
+            echo "- **macOS:** unsigned, unnotarized DMG. Gatekeeper will warn. No Apple Developer certificate is configured (\$99/year; secrets were not assumed)."
+            echo "- **Windows:** PyInstaller .exe only — incomplete. No vendored Ollama, no LAN IP detection. Read the attached INCOMPLETE.txt."
+            echo
+            echo "## Stable download URLs"
+            echo "These names stay the same across releases (always this latest build):"
+            echo "- https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/PortableAI-linux-x86_64.AppImage"
+            echo "- https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/PortableAI-macos-arm64.dmg"
+            echo "- https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/PortableAI-windows-x86_64.exe"
+            echo
+            echo "## From docs/ROADMAP.md (known gaps)"
+            echo
+            awk '/^## Known, real gaps/,/^## Next up/{if(/^## Next up/) exit; print}' docs/ROADMAP.md
+          } > release_notes.md
+          find artifacts -type f | sort
+
+      - name: Duplicate stable-named assets
+        run: |
+          set -euo pipefail
+          while IFS= read -r f; do
+            dir=$(dirname "$f")
+            base=$(basename "$f")
+            case "$base" in
+              PortableAI-linux-*.AppImage|PortableAI-macos-*.dmg|PortableAI-windows-x86_64.exe)
+                continue
+                ;;
+              PortableAI-*-linux-*.AppImage)
+                arch="${base##*-linux-}"
+                arch="${arch%.AppImage}"
+                cp -f "$f" "$dir/PortableAI-linux-${arch}.AppImage"
+                ;;
+              PortableAI-*-macos-*.dmg)
+                arch="${base##*-macos-}"
+                arch="${arch%.dmg}"
+                cp -f "$f" "$dir/PortableAI-macos-${arch}.dmg"
+                ;;
+              PortableAI-*-windows-*.exe)
+                cp -f "$f" "$dir/PortableAI-windows-x86_64.exe"
+                ;;
+            esac
+          done < <(find artifacts -type f | sort)
+          echo "Release assets to upload:"
+          find artifacts -type f | sort
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          body_path: release_notes.md
+          fail_on_unmatched_files: true
+          generate_release_notes: false

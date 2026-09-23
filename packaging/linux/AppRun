@@ -1,0 +1,53 @@
+#!/bin/sh
+# AppImage entry: install a launcher + icon, then run the bundled binary.
+# Ubuntu Files treats *.AppImage as application/vnd.appimage (generic gear)
+# unless we install the real logo into the user icon theme and mark this
+# file with metadata::custom-icon.
+SELF=$(dirname "$(readlink -f "$0")")
+
+if [ -n "${APPIMAGE:-}" ] && [ -n "${HOME:-}" ]; then
+  data="${XDG_DATA_HOME:-$HOME/.local/share}"
+  apps="$data/applications"
+  icons="$data/icons/hicolor/256x256/apps"
+  mkdir -p "$apps" "$icons"
+  ICON_SRC=""
+  if [ -f "$SELF/portableai.png" ]; then
+    ICON_SRC="$SELF/portableai.png"
+  elif [ -f "$SELF/usr/share/icons/hicolor/256x256/apps/portableai.png" ]; then
+    ICON_SRC="$SELF/usr/share/icons/hicolor/256x256/apps/portableai.png"
+  fi
+  if [ -n "$ICON_SRC" ]; then
+    cp "$ICON_SRC" "$icons/portableai.png"
+    # Same-name sidecar some file managers use for a custom file icon.
+    cp "$ICON_SRC" "${APPIMAGE}.png" 2>/dev/null || true
+  fi
+  ICON_LINE="portableai"
+  if [ -f "$icons/portableai.png" ]; then
+    ICON_LINE="$icons/portableai.png"
+  fi
+  tmp="$apps/portableai.desktop.tmp"
+  cat > "$tmp" << EOF
+[Desktop Entry]
+Type=Application
+Name=PortableAI
+Exec="${APPIMAGE}" --appimage-extract-and-run
+Icon=$ICON_LINE
+Terminal=true
+Categories=Utility;Network;
+Comment=Local AI chat server for Ollama
+StartupNotify=true
+StartupWMClass=portableai
+EOF
+  mv "$tmp" "$apps/portableai.desktop"
+  if command -v gio >/dev/null 2>&1 && [ -f "$icons/portableai.png" ]; then
+    gio set -t string "$APPIMAGE" "metadata::custom-icon" "file://$icons/portableai.png" 2>/dev/null || true
+  fi
+  if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -f "$data/icons/hicolor" 2>/dev/null || true
+  fi
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$apps" 2>/dev/null || true
+  fi
+fi
+
+exec "$SELF/usr/bin/portableai" "$@"

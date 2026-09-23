@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=PortableAI
+Exec=portableai
+Icon=portableai
+Terminal=true
+Categories=Utility;Network;
+Comment=Local AI chat server for Ollama
+StartupNotify=true
+StartupWMClass=portableai

@@ -1,0 +1,2083 @@
+import json
+import inspect
+import shutil
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+import requests
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "ui"))
+
+import conversation_store  # noqa: E402
+import pairing_store  # noqa: E402
+
+
+@pytest.fixture
+def app(tmp_path, monkeypatch):
+    """Import server fresh with DATA_DIR/LOG_FILE/SETTINGS_FILE/DB_FILE
+    redirected to a temp dir, so tests never touch the real data/ folder.
+    Personas are copied so CRUD tests cannot mutate the repo tree."""
+    import server as server_module
+
+    personas_copy = tmp_path / "personas"
+    shutil.copytree(ROOT / "personas", personas_copy)
+    monkeypatch.setattr(server_module, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(server_module, "LOG_FILE", tmp_path / "logs.jsonl")
+    monkeypatch.setattr(server_module, "SETTINGS_FILE", tmp_path / "settings.json")
+    monkeypatch.setattr(server_module, "THEME_FILE", tmp_path / "theme.json")
+    monkeypatch.setattr(server_module, "DB_FILE", tmp_path / "chats.db")
+    monkeypatch.setattr(server_module, "PAIRING_FILE", tmp_path / "pairing.json")
+    monkeypatch.setattr(server_module, "PERSONAS_DIR", personas_copy)
+    server_module._built_personas.clear()
+    server_module.set_managed_ollama_base_url(None)
+    server_module.set_listen_port(server_module.PORT)
+    server_module.app.config.update(TESTING=True)
+    return server_module
+
+
+@pytest.fixture
+def client(app):
+    return app.app.test_client()
+
+
+def test_index_serves_html(client):
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert b"PortableAI" in resp.data
+
+
+def test_index_includes_theme_switcher(client):
+    html = client.get("/").data
+    assert b'data-theme="dark"' in html
+    assert b"portableai.theme" in html
+    assert b'id="themeSelect"' in html
+    assert b'value="dark"' in html
+    assert b'value="light"' in html
+    assert b'value="ube"' in html
+
+
+def test_style_defines_named_themes(client):
+    resp = client.get("/style.css")
+    assert resp.status_code == 200
+    css = resp.data
+    assert b'[data-theme="dark"]' in css
+    assert b'[data-theme="light"]' in css
+    assert b'[data-theme="ube"]' in css
+    assert b"--bg-main: #141218" in css
+
+
+def test_theme_defaults_to_dark_on_fresh_install(client, app):
+    assert not app.THEME_FILE.exists()
+    resp = client.get("/api/theme")
+    assert resp.status_code == 200
+    assert resp.get_json() == {"theme": "dark"}
+
+
+def test_theme_invalid_value_is_rejected(client):
+    resp = client.post(
+        "/api/theme",
+        data=json.dumps({"theme": "solarized"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+    assert resp.get_json()["error"] == "theme must be one of: dark, light, ube"
+    assert client.get("/api/theme").get_json() == {"theme": "dark"}
+
+
+def test_theme_persists_across_requests(client, app):
+    posted = client.post(
+        "/api/theme",
+        data=json.dumps({"theme": "ube"}),
+        content_type="application/json",
+    )
+    assert posted.status_code == 200
+    assert posted.get_json() == {"theme": "ube"}
+    assert json.loads(app.THEME_FILE.read_text()) == {"theme": "ube"}
+    assert client.get("/api/theme").get_json() == {"theme": "ube"}
+
+
+def test_lan_device_with_token_can_read_and_write_theme(client, app):
+    """Theme is requires-token, not admin-only — unlike /api/settings."""
+    env, headers = _lan_auth_headers(client, app)
+    got = client.get("/api/theme", environ_overrides=env, headers=headers)
+    assert got.status_code == 200
+    assert got.get_json() == {"theme": "dark"}
+
+    posted = client.post(
+        "/api/theme",
+        data=json.dumps({"theme": "light"}),
+        content_type="application/json",
+        environ_overrides=env,
+        headers=headers,
+    )
+    assert posted.status_code == 200
+    assert posted.get_json() == {"theme": "light"}
+    assert client.get("/api/theme").get_json() == {"theme": "light"}
+
+    settings = client.get("/api/settings", environ_overrides=env, headers=headers)
+    assert settings.status_code == 403
+
+
+def test_lan_theme_without_token_is_rejected(client):
+    resp = client.get("/api/theme", environ_overrides=LAN_ENV)
+    assert resp.status_code == 401
+    assert resp.get_json()["error"] == "pairing required"
+
+
+def test_logo_svg_is_served(client):
+    resp = client.get("/logo.svg")
+    assert resp.status_code == 200
+    assert b"<svg" in resp.data
+    assert b"portableai-badge" in resp.data
+
+
+def test_logo_png_is_served(client):
+    resp = client.get("/logo.png")
+    assert resp.status_code == 200
+    assert resp.data[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_api_personas_lists_bundled_personas(client):
+    resp = client.get("/api/personas")
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    by_id = {p["id"]: p for p in payload}
+    assert {"assistant", "no-nonsense-mentor", "eli5-explainer", "survival-guide"}.issubset(by_id)
+    assistant = by_id["assistant"]
+    assert assistant["display_name"] == "Assistant"
+    assert assistant["is_default"] is True
+    assert assistant["icon"] == "message"
+    assert assistant["base_model"] == "llama3.2:3b"
+    assert by_id["no-nonsense-mentor"]["is_default"] is False
+    assert by_id["eli5-explainer"]["is_default"] is False
+    assert by_id["no-nonsense-mentor"]["display_name"] == "Mentor"
+    assert by_id["no-nonsense-mentor"]["icon"] == "person"
+    assert by_id["eli5-explainer"]["display_name"] == "Explainer"
+    assert by_id["eli5-explainer"]["icon"] == "lightbulb"
+    assert by_id["survival-guide"]["display_name"] == "Survival Guide"
+    assert by_id["survival-guide"]["icon"] == "shield"
+    assert by_id["survival-guide"]["base_model"] == "llama3.2:3b"
+    for p in payload:
+        assert "display_name" in p
+        assert "is_default" in p
+        assert "icon" in p
+        assert p["icon"] in {"message", "shield", "person", "lightbulb"}
+        assert "base_model" in p or "error" in p
+        assert "model_installed" in p
+        assert isinstance(p["model_installed"], bool)
+        assert isinstance(p.get("cards"), list)
+    survival_cards = by_id["survival-guide"]["cards"]
+    assert len(survival_cards) == 3
+    for card in survival_cards:
+        assert card["verified"] is False
+        assert card["verified_by"] is None
+        assert card["verified_source"] is None
+        assert "PLACEHOLDER" in card["answer"]
+        assert card["id"]
+        assert card["title"]
+    assert by_id["assistant"]["cards"] == []
+    defaults = [p for p in payload if p.get("is_default")]
+    assert len(defaults) == 1
+    assert defaults[0]["id"] == "assistant"
+
+
+def test_assistant_copy_button_is_hover_only_with_clipboard_fallback(client):
+    js = client.get("/app.js").data.decode()
+    assert "bubble-copy" in js
+    assert "copyTextToClipboard" in js
+    assert 'typeof navigator.clipboard !== "undefined"' in js
+    assert 'document.execCommand("copy")' in js
+    assert "dataset.raw" in js
+    css = client.get("/style.css").data.decode()
+    assert ".bubble-copy" in css
+    assert "opacity: 0" in css
+    assert ".bubble:hover .bubble-copy" in css
+    html = client.get("/").data.decode()
+    assert "style.css?v=" in html
+    assert "app.js?v=" in html
+
+
+def test_persona_list_ui_hides_model_and_renders_icons(client):
+    js = client.get("/app.js").data.decode()
+    assert "persona-model" not in js
+    assert "personaIconSvg" in js
+    assert "PERSONA_ICON_SVGS" in js
+    assert "persona-icon" in js
+    assert "Persona default" in js
+    assert "persona.base_model" in js
+    assert "gateFirstRun" in js
+    assert "/api/setup-status" in js
+    assert "model_installed" in js
+    assert "download it now?" in js
+    css = client.get("/style.css").data.decode()
+    assert ".persona-icon" in css
+    assert ".persona-item.is-unavailable" in css
+    assert ".persona-model" not in css
+    html = client.get("/").data.decode()
+    assert 'id="setupOverlay"' in html
+    assert 'id="onboardOverlay"' in html
+    assert "No models installed yet" in html
+    assert "Setting up PortableAI for the first time" in html
+
+
+def test_settings_roundtrip(client):
+    resp = client.post(
+        "/api/settings",
+        data=json.dumps({"base_url": "http://example.com:11434"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 200
+    assert resp.get_json()["base_url"] == "http://example.com:11434"
+
+    resp = client.get("/api/settings")
+    assert resp.get_json()["base_url"] == "http://example.com:11434"
+
+
+def test_settings_ignores_unknown_keys(client):
+    resp = client.post(
+        "/api/settings",
+        data=json.dumps({"not_a_real_setting": "x"}),
+        content_type="application/json",
+    )
+    assert "not_a_real_setting" not in resp.get_json()
+
+
+@patch("server.OllamaClient")
+def test_api_status_reports_unavailable(mock_cls, client):
+    mock_cls.return_value.is_available.return_value = False
+    mock_cls.return_value.base_url = "http://localhost:11434"
+    resp = client.get("/api/status")
+    data = resp.get_json()
+    assert resp.status_code == 200
+    assert data["ollama_available"] is False
+    assert data["base_url"] == "http://localhost:11434"
+
+
+def test_api_setup_status_ready_by_default(client, app):
+    app.setup_progress.reset()
+    resp = client.get("/api/setup-status")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["phase"] == "ready"
+    assert data["busy"] is False
+    assert data["percent"] is None
+
+
+def test_api_setup_status_reports_download_progress(client, app):
+    app.setup_progress.update_download(25 * 1024 * 1024, 100 * 1024 * 1024)
+    try:
+        data = client.get("/api/setup-status").get_json()
+        assert data["busy"] is True
+        assert data["phase"] == "downloading_ollama"
+        assert data["percent"] == 25
+        assert data["bytes_downloaded"] == 25 * 1024 * 1024
+    finally:
+        app.setup_progress.reset()
+
+
+@patch("server.OllamaClient")
+def test_persona_model_installed_matches_get_api_models(mock_cls, client):
+    instance = mock_cls.return_value
+    instance.is_available.return_value = True
+    instance.list_models.return_value = [{"name": "llama3.2:3b"}]
+    names = {m["name"] for m in client.get("/api/models").get_json()["models"]}
+    assert names == {"llama3.2:3b"}
+    personas = client.get("/api/personas").get_json()
+    for persona in personas:
+        if persona.get("base_model") == "llama3.2:3b":
+            assert persona["model_installed"] is True
+
+
+@patch("server.OllamaClient")
+def test_persona_model_installed_false_when_inventory_empty(mock_cls, client):
+    instance = mock_cls.return_value
+    instance.is_available.return_value = True
+    instance.list_models.return_value = []
+    assert client.get("/api/models").get_json()["models"] == []
+    personas = client.get("/api/personas").get_json()
+    assert personas
+    assert all(p["model_installed"] is False for p in personas)
+
+
+@patch("server.OllamaClient")
+def test_api_status_reports_available(mock_cls, client):
+    mock_cls.return_value.is_available.return_value = True
+    mock_cls.return_value.base_url = "http://localhost:11434"
+    resp = client.get("/api/status")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["ollama_available"] is True
+    assert "ollama_mode" in data
+    assert "ollama_mode_label" in data
+
+
+@patch("server.OllamaClient")
+def test_api_status_reports_bundled_mode(mock_cls, client, app):
+    mock_cls.return_value.is_available.return_value = True
+    mock_cls.return_value.base_url = "http://127.0.0.1:11435"
+    app.set_managed_ollama_base_url("http://127.0.0.1:11435", mode="bundled")
+    data = client.get("/api/status").get_json()
+    assert data["ollama_mode"] == "bundled"
+    assert data["ollama_mode_label"] == "Ollama: bundled (port 11435)"
+
+
+@patch("server.OllamaClient")
+def test_api_status_reports_external_override(mock_cls, client, app):
+    mock_cls.return_value.is_available.return_value = True
+    mock_cls.return_value.base_url = "http://127.0.0.1:11434"
+    app.set_managed_ollama_base_url("http://127.0.0.1:11434", mode="external")
+    data = client.get("/api/status").get_json()
+    assert data["ollama_mode"] == "external"
+    assert data["ollama_mode_label"] == (
+        "Ollama: external override (http://127.0.0.1:11434)"
+    )
+
+
+def test_settings_ui_shows_ollama_mode_label():
+    html = (ROOT / "ui" / "static" / "index.html").read_text(encoding="utf-8")
+    js = (ROOT / "ui" / "static" / "app.js").read_text(encoding="utf-8")
+    assert 'id="ollamaModeLabel"' in html
+    assert "PORTABLEAI_EXTERNAL_OLLAMA_URL" in html
+    assert "ollama_mode_label" in js
+
+
+@patch("server.OllamaClient")
+def test_chat_requires_persona_and_message(mock_cls, client):
+    resp = client.post("/api/chat", data=json.dumps({}), content_type="application/json")
+    assert resp.status_code == 400
+
+
+@patch("server.OllamaClient")
+def test_chat_503_when_ollama_down(mock_cls, client):
+    mock_cls.return_value.is_available.return_value = False
+    resp = client.post(
+        "/api/chat",
+        data=json.dumps({"persona": "no-nonsense-mentor", "message": "hi"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 503
+
+
+@patch("server.OllamaClient")
+def test_chat_happy_path_builds_persona_once_and_logs(mock_cls, client, app):
+    instance = mock_cls.return_value
+    instance.is_available.return_value = True
+    instance.chat.return_value = "Ship it. Next: write the migration test."
+
+    body = json.dumps({"persona": "no-nonsense-mentor", "message": "Should I deploy on Friday?"})
+    resp = client.post("/api/chat", data=body, content_type="application/json")
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["reply"] == "Ship it. Next: write the migration test."
+    conversation_id = data["conversation_id"]
+    assert conversation_id
+    instance.create_model.assert_called_once()  # persona built exactly once
+
+    # A second message in the SAME conversation should not rebuild the persona.
+    body2 = json.dumps(
+        {"persona": "no-nonsense-mentor", "message": "And staging?", "conversation_id": conversation_id}
+    )
+    resp2 = client.post("/api/chat", data=body2, content_type="application/json")
+    assert resp2.status_code == 200
+    assert resp2.get_json()["conversation_id"] == conversation_id
+    instance.create_model.assert_called_once()
+
+    logs = app._read_logs()
+    assert len(logs) == 2
+    assert logs[0]["reply"] == "Ship it. Next: write the migration test."
+
+    # Conversation should now hold 4 messages (2 user, 2 assistant).
+    conn = app._db()
+    conv = conversation_store.get_conversation(conn, conversation_id)
+    conn.close()
+    assert len(conv["messages"]) == 4
+    assert conv["title"] == "Should I deploy on Friday?"
+
+
+@patch("server.OllamaClient")
+def test_chat_unknown_persona_returns_500(mock_cls, client):
+    mock_cls.return_value.is_available.return_value = True
+    resp = client.post(
+        "/api/chat",
+        data=json.dumps({"persona": "does-not-exist", "message": "hi"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 500
+
+
+@patch("server.OllamaClient")
+def test_chat_connection_error_returns_json_502(mock_cls, client):
+    instance = mock_cls.return_value
+    instance.is_available.return_value = True
+    instance.chat.side_effect = requests.ConnectionError("Connection refused")
+    resp = client.post(
+        "/api/chat",
+        data=json.dumps({"persona": "no-nonsense-mentor", "message": "hi"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 502
+    assert resp.content_type.startswith("application/json")
+    assert resp.get_json()["error"] == "Lost connection to Ollama mid-request."
+
+
+@patch("server.OllamaClient")
+def test_chat_timeout_returns_json_502(mock_cls, client):
+    instance = mock_cls.return_value
+    instance.is_available.return_value = True
+    instance.chat.side_effect = requests.Timeout("read timed out")
+    resp = client.post(
+        "/api/chat",
+        data=json.dumps({"persona": "no-nonsense-mentor", "message": "hi"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 502
+    assert resp.content_type.startswith("application/json")
+    assert resp.get_json()["error"] == "Lost connection to Ollama mid-request."
+
+
+@patch("server.OllamaClient")
+def test_chat_truncated_json_returns_json_502(mock_cls, client):
+    instance = mock_cls.return_value
+    instance.is_available.return_value = True
+    instance.chat.side_effect = json.JSONDecodeError(
+        "Expecting value", '{"message": {"content": "hel', 12
+    )
+    resp = client.post(
+        "/api/chat",
+        data=json.dumps({"persona": "no-nonsense-mentor", "message": "hi"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 502
+    assert resp.content_type.startswith("application/json")
+    assert resp.get_json()["error"] == "Ollama returned an incomplete or invalid response."
+
+
+@patch("server.OllamaClient")
+def test_chat_with_model_override_builds_named_variant(mock_cls, client):
+    instance = mock_cls.return_value
+    instance.is_available.return_value = True
+    instance.chat.return_value = "ok"
+
+    body = json.dumps(
+        {"persona": "no-nonsense-mentor", "message": "hi", "model_override": "qwen2.5:0.5b"}
+    )
+    resp = client.post("/api/chat", data=body, content_type="application/json")
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["model_used"] == "no-nonsense-mentor--qwen2.5-0.5b"
+
+    payload = instance.create_model.call_args[0][0]
+    assert payload["model"] == "no-nonsense-mentor--qwen2.5-0.5b"
+    assert payload["from"] == "qwen2.5:0.5b"
+
+    # chat() should be called against the variant name, not the persona name
+    call_args = instance.chat.call_args[0]
+    assert call_args[0] == "no-nonsense-mentor--qwen2.5-0.5b"
+
+
+@patch("server.OllamaClient")
+def test_api_models_formats_size_and_reports_path(mock_cls, client, app):
+    instance = mock_cls.return_value
+    instance.is_available.return_value = True
+    instance.list_models.return_value = [
+        {
+            "name": "llama3.2:3b",
+            "size": 2147483648,
+            "modified_at": "2026-01-01T00:00:00Z",
+            "details": {"quantization_level": "Q4_K_M", "parameter_size": "3B"},
+        }
+    ]
+    resp = client.get("/api/models")
+    data = resp.get_json()
+    assert data["models"][0]["name"] == "llama3.2:3b"
+    assert data["models"][0]["size_human"] == "2.0 GB"
+    assert data["models"][0]["quantization"] == "Q4_K_M"
+    hint = data["models_path_hint"]
+    assert hint
+    if sys.platform.startswith("linux") or sys.platform == "darwin":
+        assert hint == str((app.DATA_DIR / "ollama-models").resolve())
+        assert " or " not in hint
+
+
+@pytest.mark.skipif(
+    not (sys.platform.startswith("linux") or sys.platform == "darwin"),
+    reason="bundled models path is Linux/macOS only",
+)
+def test_models_path_hint_is_portableai_data_dir_when_bundled(app):
+    hint = app._models_path_hint()
+    assert hint == str((app.DATA_DIR / "ollama-models").resolve())
+    assert " or " not in hint
+    assert "/usr/share/ollama" not in hint
+
+
+def test_managed_ollama_base_url_overrides_settings(app):
+    app.set_managed_ollama_base_url("http://127.0.0.1:11435")
+    assert app._client().base_url == "http://127.0.0.1:11435"
+    app.set_managed_ollama_base_url(None)
+    assert app._client().base_url == app.DEFAULT_SETTINGS["base_url"]
+
+
+@patch("server.OllamaClient")
+def test_api_models_returns_empty_when_ollama_down(mock_cls, client):
+    mock_cls.return_value.is_available.return_value = False
+    resp = client.get("/api/models")
+    assert resp.status_code == 200
+    assert resp.get_json()["models"] == []
+
+
+def test_logs_empty_then_populated(client, app):
+    resp = client.get("/api/logs")
+    assert resp.get_json() == []
+
+    app._log({"persona": "no-nonsense-mentor", "message": "hi", "reply": "yo"})
+    resp = client.get("/api/logs")
+    entries = resp.get_json()
+    assert len(entries) == 1
+    assert entries[0]["message"] == "hi"
+
+
+def test_clear_logs(client, app):
+    app._log({"persona": "no-nonsense-mentor", "message": "hi", "reply": "yo"})
+    resp = client.delete("/api/logs")
+    assert resp.get_json()["cleared"] is True
+    assert client.get("/api/logs").get_json() == []
+
+
+# ---------- Conversation history: create/list/search/archive/delete ----------
+
+
+def test_create_conversation_uses_persona_base_model_when_no_override(client):
+    resp = client.post(
+        "/api/conversations",
+        data=json.dumps({"persona": "no-nonsense-mentor"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 200
+    conv_id = resp.get_json()["id"]
+
+    conv = client.get(f"/api/conversations/{conv_id}").get_json()
+    assert conv["model_used"] == "llama3.2:3b"
+    assert conv["messages"] == []
+
+
+def test_create_conversation_unknown_persona_400(client):
+    resp = client.post(
+        "/api/conversations",
+        data=json.dumps({"persona": "does-not-exist"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+
+
+def test_get_conversation_404_when_missing(client):
+    resp = client.get("/api/conversations/does-not-exist")
+    assert resp.status_code == 404
+
+
+@patch("server.OllamaClient")
+def test_chat_without_conversation_id_creates_one_and_history_persists(mock_cls, client):
+    instance = mock_cls.return_value
+    instance.is_available.return_value = True
+    instance.chat.return_value = "Use REST unless you need federated queries."
+
+    resp = client.post(
+        "/api/chat",
+        data=json.dumps({"persona": "no-nonsense-mentor", "message": "REST or GraphQL?"}),
+        content_type="application/json",
+    )
+    conv_id = resp.get_json()["conversation_id"]
+
+    listing = client.get("/api/conversations").get_json()
+    assert any(c["id"] == conv_id for c in listing)
+    matched = next(c for c in listing if c["id"] == conv_id)
+    assert matched["title"] == "REST or GraphQL?"
+
+
+def test_rename_conversation(client):
+    conv_id = client.post(
+        "/api/conversations",
+        data=json.dumps({"persona": "no-nonsense-mentor"}),
+        content_type="application/json",
+    ).get_json()["id"]
+
+    resp = client.patch(
+        f"/api/conversations/{conv_id}",
+        data=json.dumps({"title": "My renamed chat"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 200
+    conv = client.get(f"/api/conversations/{conv_id}").get_json()
+    assert conv["title"] == "My renamed chat"
+
+
+def test_rename_conversation_requires_nonempty_title(client):
+    conv_id = client.post(
+        "/api/conversations",
+        data=json.dumps({"persona": "no-nonsense-mentor"}),
+        content_type="application/json",
+    ).get_json()["id"]
+
+    resp = client.patch(
+        f"/api/conversations/{conv_id}",
+        data=json.dumps({"title": "   "}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+
+
+def test_archive_and_unarchive_conversation(client):
+    conv_id = client.post(
+        "/api/conversations",
+        data=json.dumps({"persona": "no-nonsense-mentor"}),
+        content_type="application/json",
+    ).get_json()["id"]
+
+    client.post(f"/api/conversations/{conv_id}/archive", data=json.dumps({"archived": True}), content_type="application/json")
+    active = client.get("/api/conversations?archived=0").get_json()
+    archived = client.get("/api/conversations?archived=1").get_json()
+    assert not any(c["id"] == conv_id for c in active)
+    assert any(c["id"] == conv_id for c in archived)
+
+    client.post(f"/api/conversations/{conv_id}/archive", data=json.dumps({"archived": False}), content_type="application/json")
+    active = client.get("/api/conversations?archived=0").get_json()
+    assert any(c["id"] == conv_id for c in active)
+
+
+def test_delete_conversation(client):
+    conv_id = client.post(
+        "/api/conversations",
+        data=json.dumps({"persona": "no-nonsense-mentor"}),
+        content_type="application/json",
+    ).get_json()["id"]
+
+    resp = client.delete(f"/api/conversations/{conv_id}")
+    assert resp.get_json()["deleted"] is True
+    assert client.get(f"/api/conversations/{conv_id}").status_code == 404
+
+
+def test_search_conversations_by_query_param(client):
+    conv_id = client.post(
+        "/api/conversations",
+        data=json.dumps({"persona": "eli5-explainer"}),
+        content_type="application/json",
+    ).get_json()["id"]
+    import server as server_module
+
+    conn = server_module._db()
+    conversation_store.add_message(conn, conv_id, "user", "What is a container?")
+    conn.close()
+
+    hits = client.get("/api/conversations?q=container").get_json()
+    assert any(c["id"] == conv_id for c in hits)
+
+    misses = client.get("/api/conversations?q=kubernetes").get_json()
+    assert not any(c["id"] == conv_id for c in misses)
+
+
+def test_conversations_garbage_db_returns_json_500(client, app):
+    app.DB_FILE.write_bytes(b"NOT-A-SQLITE-DATABASE")
+    resp = client.get("/api/conversations")
+    assert resp.status_code == 500
+    assert resp.content_type.startswith("application/json")
+    assert resp.get_json()["error"] == "chat history database appears corrupted"
+    assert b"<html" not in resp.data.lower()
+
+
+def test_conversations_truncated_db_returns_json_500(client, app):
+    conn = app._db()
+    conversation_store.create_conversation(conn, "no-nonsense-mentor", "llama3.2:3b", "local")
+    conn.close()
+    raw = app.DB_FILE.read_bytes()
+    app.DB_FILE.write_bytes(raw[:40])
+    resp = client.get("/api/conversations")
+    assert resp.status_code == 500
+    assert resp.content_type.startswith("application/json")
+    assert "corrupted" in resp.get_json()["error"]
+
+
+def test_conversations_zero_byte_db_warns_and_initializes(client, app, caplog):
+    app.DB_FILE.write_bytes(b"")
+    with caplog.at_level("WARNING", logger="conversation_store"):
+        resp = client.get("/api/conversations")
+    assert resp.status_code == 200
+    assert resp.get_json() == []
+    assert any("0 bytes" in r.message for r in caplog.records)
+
+
+def test_oversized_json_body_returns_json_413(client, app):
+    """1MB MAX_CONTENT_LENGTH: a ~10MB payload is rejected before Ollama."""
+    assert app.app.config["MAX_CONTENT_LENGTH"] == 1 * 1024 * 1024
+    huge = json.dumps({"persona": "no-nonsense-mentor", "message": "x" * (10 * 1024 * 1024)})
+    resp = client.post("/api/chat", data=huge, content_type="application/json")
+    assert resp.status_code == 413
+    assert resp.content_type.startswith("application/json")
+    assert "too large" in resp.get_json()["error"].lower()
+    assert b"<html" not in resp.data.lower()
+
+
+# ---------- LAN pairing / auth gate ----------
+
+LAN_ENV = {"REMOTE_ADDR": "192.168.1.50"}
+
+
+def test_health_endpoint_open_to_lan(client):
+    resp = client.get("/api/health", environ_overrides=LAN_ENV)
+    assert resp.status_code == 200
+    assert resp.get_json()["ok"] is True
+
+
+def test_localhost_bypasses_auth_entirely(client):
+    # default test client REMOTE_ADDR is 127.0.0.1 -- no token needed
+    resp = client.get("/api/personas")
+    assert resp.status_code == 200
+
+
+def test_ipv4_mapped_loopback_bypasses_auth(client):
+    resp = client.get("/api/personas", environ_overrides={"REMOTE_ADDR": "::ffff:127.0.0.1"})
+    assert resp.status_code == 200
+
+
+@patch("server._enumerate_lan_ips", return_value=["192.168.1.134"])
+def test_lan_ip_including_servers_own_requires_pairing(mock_enum, client):
+    """Opening the UI at http://192.168.1.134:5050 is a remote client,
+    even when that address belongs to this machine. Pairing is required."""
+    env = {"REMOTE_ADDR": "192.168.1.134"}
+    for path in ("/api/personas", "/api/models", "/api/status", "/api/setup-status"):
+        resp = client.get(path, environ_overrides=env)
+        assert resp.status_code == 401, path
+        assert resp.get_json()["error"] == "pairing required"
+
+
+@patch("server._enumerate_lan_ips", return_value=["192.168.1.134"])
+def test_lan_ip_cannot_read_admin_pairing_pin(mock_enum, client):
+    resp = client.get("/api/pairing/pin", environ_overrides={"REMOTE_ADDR": "192.168.1.134"})
+    assert resp.status_code == 403
+
+
+def test_claim_pin_then_token_unlocks_personas(client, app):
+    pin = client.get("/api/pairing/pin").get_json()["pin"]
+    claim = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"pin": pin, "device_name": "LAN browser"}),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+    )
+    assert claim.status_code == 200
+    token = claim.get_json()["device_token"]
+    resp = client.get(
+        "/api/personas",
+        environ_overrides=LAN_ENV,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    ids = {p["id"] for p in resp.get_json()}
+    assert "eli5-explainer" in ids
+
+
+def test_index_includes_pairing_gate_and_sidebar_toggle(client):
+    html = client.get("/").get_data(as_text=True)
+    assert 'id="pairingGate"' in html
+    pin_input = html.split('id="pairingGatePin"', 1)[1].split(">", 1)[0]
+    assert "inputmode" not in pin_input
+    assert "maxlength" not in pin_input
+    assert "pattern=" not in pin_input
+    assert "PIN or password" in html
+    assert 'id="sidebarToggle"' in html
+    assert 'id="menuBtn"' in html
+    assert 'id="deviceCountPill"' in html
+    assert 'id="connectDeviceBtn"' in html
+    assert 'id="cardChips"' in html
+    assert 'id="pane-personas"' in html
+    assert 'id="familyPasswordInput"' in html
+    assert 'id="saveFamilyPasswordBtn"' in html
+    assert "Add persona" in html
+    js = client.get("/app.js").data.decode()
+    assert "pairingClaimBody" in js
+    assert "family_password" in js
+    assert r"/^\d{4,8}$/" not in js
+    assert "Type a password, then click Save password." in js
+    assert "app.js?v=" in html
+    assert 'id="pairingQrWrap"' in html
+    assert 'id="connectQrWrap"' in html
+    assert 'id="pairingConnectedBanner"' in html
+    assert "pairing-success-toast" in html
+    assert "PAIRING_PANEL_POLL_MS = 1800" in js
+    assert "isPairingSurfaceOpen" in js
+    assert "showPairingSuccess" in js
+    assert "showConnectedBanner" in js
+    css = client.get("/style.css").data.decode()
+    assert "@keyframes pairing-qr-listen" in css
+    assert "@keyframes pairing-success-in" in css
+    assert "pairing-connected-banner" in css
+    assert "device-count-pill.just-connected" in css
+    assert "⚠ Not yet verified" in js
+    assert "Quick reference" in js
+    assert "/api/chat/reference" in js
+    assert 'id="connectDeviceModal" class="modal-backdrop hidden"' in html
+    assert "Connect a device" in html
+    sidebar = html.split('id="sidebar"', 1)[1].split("</aside>", 1)[0]
+    assert "pairingPinText" not in sidebar
+    assert "connectPinText" not in sidebar
+    assert "pairingQrImg" not in sidebar
+    assert "connectQrImg" not in sidebar
+
+
+def test_lan_request_without_token_is_rejected(client):
+    resp = client.get("/api/personas", environ_overrides=LAN_ENV)
+    assert resp.status_code == 401
+    assert resp.get_json()["error"] == "pairing required"
+
+
+@patch("server._enumerate_lan_ips", return_value=["192.168.1.134"])
+def test_foreign_lan_ip_still_requires_pairing_for_status_and_models(mock_enum, client):
+    for path in ("/api/status", "/api/models", "/api/personas"):
+        resp = client.get(path, environ_overrides=LAN_ENV)
+        assert resp.status_code == 401, path
+        assert resp.get_json()["error"] == "pairing required"
+
+
+def test_lan_request_with_valid_token_is_allowed(client, app):
+    pin = pairing_store.generate_pin(app.PAIRING_FILE)
+    token = pairing_store.claim_pin(app.PAIRING_FILE, pin, "Test iPhone")
+
+    resp = client.get(
+        "/api/personas",
+        environ_overrides=LAN_ENV,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+
+
+def test_lan_request_with_bogus_token_is_rejected(client):
+    resp = client.get(
+        "/api/personas",
+        environ_overrides=LAN_ENV,
+        headers={"Authorization": "Bearer not-a-real-token"},
+    )
+    assert resp.status_code == 401
+
+
+def test_pairing_pin_endpoint_rejects_lan(client):
+    resp = client.get("/api/pairing/pin", environ_overrides=LAN_ENV)
+    assert resp.status_code == 403
+
+
+def test_pairing_regenerate_rejects_lan(client):
+    resp = client.post("/api/pairing/pin/regenerate", environ_overrides=LAN_ENV)
+    assert resp.status_code == 403
+
+
+def test_pairing_pin_endpoint_works_from_localhost(client):
+    resp = client.get("/api/pairing/pin")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert "pin" in data
+    assert len(data["pin"]) == 6 and data["pin"].isdigit()
+    assert isinstance(data["expires_at"], (int, float))
+    assert data["expires_at"] > time.time()
+
+
+def test_pairing_pin_regenerate_issues_new_pin_with_expiry(client):
+    first = client.get("/api/pairing/pin").get_json()
+    resp = client.post("/api/pairing/pin/regenerate")
+    assert resp.status_code == 200
+    second = resp.get_json()
+    assert second["pin"] != first["pin"]
+    assert isinstance(second["expires_at"], (int, float))
+    assert second["expires_at"] > time.time()
+    # GET reflects the regenerated PIN
+    again = client.get("/api/pairing/pin").get_json()
+    assert again["pin"] == second["pin"]
+
+
+def test_pairing_devices_endpoint_rejects_lan(client):
+    resp = client.get("/api/pairing/devices", environ_overrides=LAN_ENV)
+    assert resp.status_code == 403
+
+
+def _lan_auth_headers(client, app, addr="192.168.1.77"):
+    """Pair a device and return (environ_overrides, headers) for LAN calls."""
+    pin = pairing_store.generate_pin(app.PAIRING_FILE)
+    token = pairing_store.claim_pin(app.PAIRING_FILE, pin, "LAN phone")
+    return {"REMOTE_ADDR": addr}, {"Authorization": f"Bearer {token}"}
+
+
+def test_logs_settings_pull_catalog_updates_reject_lan_with_valid_token(client, app):
+    """A paired LAN device must not reach admin-only routes (403, not 401).
+
+    Catalog and updates/check are admin-only: catalog reports which models
+    are installed here, and updates/check is pull-adjacent / settings-URL
+    outbound. See _ADMIN_ONLY_PATHS in server.py.
+    """
+    env, headers = _lan_auth_headers(client, app, addr="192.168.1.77")
+    cases = [
+        ("GET", "/api/logs", None),
+        ("DELETE", "/api/logs", None),
+        ("GET", "/api/settings", None),
+        ("POST", "/api/settings", {"base_url": "http://evil.example:11434"}),
+        ("POST", "/api/models/pull", {"name": "llama3.2:3b"}),
+        ("GET", "/api/models/catalog", None),
+        ("GET", "/api/updates/check", None),
+        ("POST", "/api/models/check-update", {"name": "llama3.2:3b"}),
+    ]
+    for method, path, body in cases:
+        kwargs = {"environ_overrides": env, "headers": headers}
+        if body is not None:
+            kwargs["data"] = json.dumps(body)
+            kwargs["content_type"] = "application/json"
+        resp = client.open(path, method=method, **kwargs)
+        assert resp.status_code == 403, f"{method} {path} -> {resp.status_code}"
+        assert resp.get_json()["error"] == "only available on the server machine itself"
+
+
+def test_pairing_claim_works_from_lan(client):
+    pin_resp = client.get("/api/pairing/pin")  # localhost: generates/returns current pin
+    pin = pin_resp.get_json()["pin"]
+
+    resp = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"pin": pin, "device_name": "Kim's iPhone"}),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+    )
+    assert resp.status_code == 200
+    assert "device_token" in resp.get_json()
+
+
+def test_pairing_claim_wrong_pin_from_lan_is_401(client):
+    resp = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"pin": "000000", "device_name": "Attacker"}),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+    )
+    assert resp.status_code == 401
+
+
+def test_pairing_claim_requires_pin_or_password_field(client):
+    resp = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"device_name": "No pin given"}),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+    )
+    assert resp.status_code == 400
+    assert resp.get_json()["error"] == "pin or family_password is required"
+
+
+def test_paired_device_appears_in_devices_list_and_can_be_revoked(client, app):
+    pin = pairing_store.generate_pin(app.PAIRING_FILE)
+    token = pairing_store.claim_pin(app.PAIRING_FILE, pin, "Kim's iPhone")
+
+    devices = client.get("/api/pairing/devices").get_json()
+    assert any(d["token"] == token for d in devices)
+
+    resp = client.delete(f"/api/pairing/devices/{token}")
+    assert resp.get_json()["revoked"] is True
+
+    # Now that same LAN request should be rejected again.
+    lan_resp = client.get(
+        "/api/personas",
+        environ_overrides=LAN_ENV,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert lan_resp.status_code == 401
+
+
+def test_settings_reports_family_password_unset_by_default(client):
+    data = client.get("/api/settings").get_json()
+    assert data["family_password_set"] is False
+    assert "family_password" not in data
+
+
+def test_family_password_claim_rejected_when_unset(client):
+    resp = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"family_password": "house-key", "device_name": "Phone"}),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+    )
+    assert resp.status_code == 401
+    assert resp.get_json()["error"] == "invalid family password"
+
+
+def test_pin_claim_still_works_when_family_password_unset(client):
+    pin = client.get("/api/pairing/pin").get_json()["pin"]
+    resp = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"pin": pin, "device_name": "PIN phone"}),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+    )
+    assert resp.status_code == 200
+    assert len(resp.get_json()["device_token"]) == 32
+
+
+def test_family_password_set_from_localhost_not_lan(client, app):
+    posted = client.post(
+        "/api/settings",
+        data=json.dumps({"family_password": "house-key"}),
+        content_type="application/json",
+    )
+    assert posted.status_code == 200
+    assert posted.get_json()["family_password_set"] is True
+    assert "house-key" not in posted.get_data(as_text=True)
+    assert "house-key" not in app.SETTINGS_FILE.read_text()
+    assert "house-key" not in app.PAIRING_FILE.read_text()
+
+    env, headers = _lan_auth_headers(client, app)
+    lan = client.post(
+        "/api/settings",
+        data=json.dumps({"family_password": "hacked"}),
+        content_type="application/json",
+        environ_overrides=env,
+        headers=headers,
+    )
+    assert lan.status_code == 403
+    claim = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"family_password": "house-key", "device_name": "Kitchen iPad"}),
+        content_type="application/json",
+        environ_overrides={"REMOTE_ADDR": "192.168.1.80"},
+    )
+    assert claim.status_code == 200
+    stolen = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"family_password": "hacked", "device_name": "Attacker"}),
+        content_type="application/json",
+        environ_overrides={"REMOTE_ADDR": "192.168.1.81"},
+    )
+    assert stolen.status_code == 401
+
+
+def test_family_password_pairs_multiple_devices_without_consuming_pin(client, app):
+    pin = pairing_store.generate_pin(app.PAIRING_FILE)
+    client.post(
+        "/api/settings",
+        data=json.dumps({"family_password": "house-key"}),
+        content_type="application/json",
+    )
+    first = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"family_password": "house-key", "device_name": "Phone A"}),
+        content_type="application/json",
+        environ_overrides={"REMOTE_ADDR": "192.168.1.50"},
+    )
+    second = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"family_password": "house-key", "device_name": "Phone B"}),
+        content_type="application/json",
+        environ_overrides={"REMOTE_ADDR": "192.168.1.51"},
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+    token_a = first.get_json()["device_token"]
+    token_b = second.get_json()["device_token"]
+    assert token_a != token_b
+    pin_claim = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"pin": pin, "device_name": "PIN phone"}),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+    )
+    assert pin_claim.status_code == 200
+    assert pin_claim.get_json()["device_token"] not in (token_a, token_b)
+
+
+def test_family_password_wrong_attempts_are_rate_limited_per_source(client, app):
+    client.post(
+        "/api/settings",
+        data=json.dumps({"family_password": "house-key"}),
+        content_type="application/json",
+    )
+    attacker = {"REMOTE_ADDR": "192.168.1.50"}
+    other = {"REMOTE_ADDR": "192.168.1.51"}
+    for _ in range(4):
+        resp = client.post(
+            "/api/pairing/claim",
+            data=json.dumps({"family_password": "nope", "device_name": "Attacker"}),
+            content_type="application/json",
+            environ_overrides=attacker,
+        )
+        assert resp.status_code == 401
+    locked = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"family_password": "nope", "device_name": "Attacker"}),
+        content_type="application/json",
+        environ_overrides=attacker,
+    )
+    assert locked.status_code == 429
+    assert locked.get_json()["error"] == "too many failed password attempts"
+    still = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"family_password": "house-key", "device_name": "Attacker"}),
+        content_type="application/json",
+        environ_overrides=attacker,
+    )
+    assert still.status_code == 429
+    ok = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"family_password": "house-key", "device_name": "Other phone"}),
+        content_type="application/json",
+        environ_overrides=other,
+    )
+    assert ok.status_code == 200
+
+
+def test_password_issued_token_matches_pin_issued_permissions(client, app):
+    """Same admin-gating and per-device isolation regardless of claim path."""
+    pin_token = _pair_device(app, "PIN phone")
+    client.post(
+        "/api/settings",
+        data=json.dumps({"family_password": "house-key"}),
+        content_type="application/json",
+    )
+    password_claim = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"family_password": "house-key", "device_name": "Password phone"}),
+        content_type="application/json",
+        environ_overrides={"REMOTE_ADDR": "192.168.1.60"},
+    )
+    password_token = password_claim.get_json()["device_token"]
+    pin_env = {"REMOTE_ADDR": "192.168.1.50"}
+    pw_env = {"REMOTE_ADDR": "192.168.1.60"}
+    pin_headers = _lan_headers(pin_token)
+    pw_headers = _lan_headers(password_token)
+
+    for env, headers in ((pin_env, pin_headers), (pw_env, pw_headers)):
+        personas = client.get("/api/personas", environ_overrides=env, headers=headers)
+        assert personas.status_code == 200
+        settings = client.get("/api/settings", environ_overrides=env, headers=headers)
+        assert settings.status_code == 403
+        logs = client.get("/api/logs", environ_overrides=env, headers=headers)
+        assert logs.status_code == 403
+        create = client.post(
+            "/api/personas",
+            data=json.dumps({
+                "display_name": "Hacked",
+                "base_model": "llama3.2:3b",
+                "system_prompt": "nope",
+            }),
+            content_type="application/json",
+            environ_overrides=env,
+            headers=headers,
+        )
+        assert create.status_code == 403
+
+    conv_pin = client.post(
+        "/api/conversations",
+        data=json.dumps({"persona": "no-nonsense-mentor"}),
+        content_type="application/json",
+        environ_overrides=pin_env,
+        headers=pin_headers,
+    ).get_json()["id"]
+    conv_pw = client.post(
+        "/api/conversations",
+        data=json.dumps({"persona": "eli5-explainer"}),
+        content_type="application/json",
+        environ_overrides=pw_env,
+        headers=pw_headers,
+    ).get_json()["id"]
+    list_pin = client.get("/api/conversations", environ_overrides=pin_env, headers=pin_headers).get_json()
+    list_pw = client.get("/api/conversations", environ_overrides=pw_env, headers=pw_headers).get_json()
+    assert {c["id"] for c in list_pin} == {conv_pin}
+    assert {c["id"] for c in list_pw} == {conv_pw}
+    assert client.get(
+        f"/api/conversations/{conv_pin}", environ_overrides=pw_env, headers=pw_headers
+    ).status_code == 404
+    assert client.get(
+        f"/api/conversations/{conv_pw}", environ_overrides=pin_env, headers=pin_headers
+    ).status_code == 404
+
+
+# ---------- Per-device data isolation ----------
+
+
+def _pair_device(app, name):
+    pin = pairing_store.generate_pin(app.PAIRING_FILE)
+    return pairing_store.claim_pin(app.PAIRING_FILE, pin, name)
+
+
+def _lan_headers(token):
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_two_devices_do_not_see_each_others_conversations(client, app):
+    token_a = _pair_device(app, "Phone A")
+    token_b = _pair_device(app, "Phone B")
+
+    conv_a = client.post(
+        "/api/conversations",
+        data=json.dumps({"persona": "no-nonsense-mentor"}),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+        headers=_lan_headers(token_a),
+    ).get_json()["id"]
+
+    conv_b = client.post(
+        "/api/conversations",
+        data=json.dumps({"persona": "no-nonsense-mentor"}),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+        headers=_lan_headers(token_b),
+    ).get_json()["id"]
+
+    list_a = client.get(
+        "/api/conversations", environ_overrides=LAN_ENV, headers=_lan_headers(token_a)
+    ).get_json()
+    list_b = client.get(
+        "/api/conversations", environ_overrides=LAN_ENV, headers=_lan_headers(token_b)
+    ).get_json()
+
+    assert {c["id"] for c in list_a} == {conv_a}
+    assert {c["id"] for c in list_b} == {conv_b}
+
+
+def test_device_cannot_read_another_devices_conversation(client, app):
+    token_a = _pair_device(app, "Phone A")
+    token_b = _pair_device(app, "Phone B")
+
+    conv_a = client.post(
+        "/api/conversations",
+        data=json.dumps({"persona": "no-nonsense-mentor"}),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+        headers=_lan_headers(token_a),
+    ).get_json()["id"]
+
+    resp = client.get(
+        f"/api/conversations/{conv_a}", environ_overrides=LAN_ENV, headers=_lan_headers(token_b)
+    )
+    assert resp.status_code == 404  # not 403 -- doesn't confirm the ID even exists
+
+
+def test_device_cannot_rename_archive_or_delete_anothers_conversation(client, app):
+    token_a = _pair_device(app, "Phone A")
+    token_b = _pair_device(app, "Phone B")
+
+    conv_a = client.post(
+        "/api/conversations",
+        data=json.dumps({"persona": "no-nonsense-mentor"}),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+        headers=_lan_headers(token_a),
+    ).get_json()["id"]
+
+    rename_resp = client.patch(
+        f"/api/conversations/{conv_a}",
+        data=json.dumps({"title": "hijacked"}),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+        headers=_lan_headers(token_b),
+    )
+    assert rename_resp.status_code == 404
+
+    archive_resp = client.post(
+        f"/api/conversations/{conv_a}/archive",
+        data=json.dumps({"archived": True}),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+        headers=_lan_headers(token_b),
+    )
+    assert archive_resp.status_code == 404
+
+    delete_resp = client.delete(
+        f"/api/conversations/{conv_a}", environ_overrides=LAN_ENV, headers=_lan_headers(token_b)
+    )
+    assert delete_resp.status_code == 404
+
+    # Confirm it's genuinely untouched -- owner can still read it normally.
+    still_there = client.get(
+        f"/api/conversations/{conv_a}", environ_overrides=LAN_ENV, headers=_lan_headers(token_a)
+    )
+    assert still_there.status_code == 200
+    assert still_there.get_json()["title"] is None
+
+
+def test_admin_localhost_sees_every_devices_conversations(client, app):
+    token_a = _pair_device(app, "Phone A")
+    token_b = _pair_device(app, "Phone B")
+
+    conv_a = client.post(
+        "/api/conversations",
+        data=json.dumps({"persona": "no-nonsense-mentor"}),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+        headers=_lan_headers(token_a),
+    ).get_json()["id"]
+    conv_b = client.post(
+        "/api/conversations",
+        data=json.dumps({"persona": "eli5-explainer"}),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+        headers=_lan_headers(token_b),
+    ).get_json()["id"]
+
+    # No environ_overrides here -- default test client is localhost (admin).
+    admin_list = client.get("/api/conversations").get_json()
+    assert {conv_a, conv_b}.issubset({c["id"] for c in admin_list})
+
+    # Admin can also read either device's conversation directly.
+    assert client.get(f"/api/conversations/{conv_a}").status_code == 200
+    assert client.get(f"/api/conversations/{conv_b}").status_code == 200
+
+
+def test_admin_created_conversation_has_local_owner_id(client):
+    conv_id = client.post(
+        "/api/conversations",
+        data=json.dumps({"persona": "no-nonsense-mentor"}),
+        content_type="application/json",
+    ).get_json()["id"]
+    conv = client.get(f"/api/conversations/{conv_id}").get_json()
+    assert conv["owner_id"] == "local"
+
+
+@patch("server.OllamaClient")
+def test_chat_from_lan_device_creates_conversation_owned_by_that_device(mock_cls, client, app):
+    instance = mock_cls.return_value
+    instance.is_available.return_value = True
+    instance.chat.return_value = "here's my answer"
+    token = _pair_device(app, "Phone A")
+
+    resp = client.post(
+        "/api/chat",
+        data=json.dumps({"persona": "no-nonsense-mentor", "message": "hi"}),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+        headers=_lan_headers(token),
+    )
+    conv_id = resp.get_json()["conversation_id"]
+
+    # The owning device can keep chatting in it.
+    resp2 = client.post(
+        "/api/chat",
+        data=json.dumps(
+            {"persona": "no-nonsense-mentor", "message": "follow-up", "conversation_id": conv_id}
+        ),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+        headers=_lan_headers(token),
+    )
+    assert resp2.status_code == 200
+
+    # A different device cannot piggyback on someone else's conversation_id.
+    other_token = _pair_device(app, "Phone B")
+    resp3 = client.post(
+        "/api/chat",
+        data=json.dumps(
+            {"persona": "no-nonsense-mentor", "message": "sneaky", "conversation_id": conv_id}
+        ),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+        headers=_lan_headers(other_token),
+    )
+    assert resp3.status_code == 404
+
+
+def test_export_conversation_respects_ownership(client, app):
+    token_a = _pair_device(app, "Phone A")
+    token_b = _pair_device(app, "Phone B")
+    conv_a = client.post(
+        "/api/conversations",
+        data=json.dumps({"persona": "no-nonsense-mentor"}),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+        headers=_lan_headers(token_a),
+    ).get_json()["id"]
+
+    own_export = client.get(
+        f"/api/conversations/{conv_a}/export", environ_overrides=LAN_ENV, headers=_lan_headers(token_a)
+    )
+    assert own_export.status_code == 200
+    assert own_export.get_json()["id"] == conv_a
+
+    other_export = client.get(
+        f"/api/conversations/{conv_a}/export", environ_overrides=LAN_ENV, headers=_lan_headers(token_b)
+    )
+    assert other_export.status_code == 404
+
+
+# ---------- LAN IP detection (the fixed version) ----------
+
+
+@patch("server.subprocess.run")
+def test_enumerate_lan_ips_parses_hostname_dash_i(mock_run, app):
+    mock_run.return_value = MagicMock(returncode=0, stdout="192.168.1.134 172.17.0.1\n")
+    ips = app._enumerate_lan_ips_linux()
+    assert ips == ["192.168.1.134", "172.17.0.1"]
+
+
+@patch("server.subprocess.run")
+def test_enumerate_lan_ips_filters_loopback(mock_run, app):
+    mock_run.return_value = MagicMock(returncode=0, stdout="127.0.0.1 192.168.1.134\n")
+    ips = app._enumerate_lan_ips_linux()
+    assert "127.0.0.1" not in ips
+    assert "192.168.1.134" in ips
+
+
+@patch("server.subprocess.run")
+def test_enumerate_lan_ips_falls_back_to_ip_command(mock_run, app):
+    def side_effect(cmd, **kwargs):
+        if cmd[0] == "hostname":
+            return MagicMock(returncode=0, stdout="")  # nothing found
+        if cmd[0] == "ip":
+            return MagicMock(
+                returncode=0,
+                stdout=json.dumps(
+                    [{"ifname": "wlan0", "addr_info": [{"local": "10.42.0.1"}, {"local": "127.0.0.1"}]}]
+                ),
+            )
+        raise FileNotFoundError
+
+    mock_run.side_effect = side_effect
+    ips = app._enumerate_lan_ips_linux()
+    assert ips == ["10.42.0.1"]
+
+
+@patch("server.subprocess.run")
+def test_enumerate_lan_ips_empty_when_both_commands_fail(mock_run, app):
+    mock_run.side_effect = FileNotFoundError
+    assert app._enumerate_lan_ips_linux() == []
+
+
+@patch("server.subprocess.run")
+def test_enumerate_lan_ips_darwin_uses_ifconfig_and_ipconfig(mock_run, app):
+    def side_effect(cmd, **kwargs):
+        if cmd == ["ifconfig", "-l"]:
+            return MagicMock(returncode=0, stdout="lo0 en0 awdl0 utun0\n")
+        if cmd == ["ipconfig", "getifaddr", "en0"]:
+            return MagicMock(returncode=0, stdout="192.168.1.129\n")
+        if cmd[:2] == ["ipconfig", "getifaddr"]:
+            return MagicMock(returncode=1, stdout="")
+        raise AssertionError(f"unexpected cmd {cmd}")
+
+    mock_run.side_effect = side_effect
+    ips = app._enumerate_lan_ips_darwin()
+    assert ips == ["192.168.1.129"]
+    # lo0 / awdl0 / utun0 must never be queried
+    queried = [c.args[0] for c in mock_run.call_args_list if c.args[0][:2] == ["ipconfig", "getifaddr"]]
+    assert queried == [["ipconfig", "getifaddr", "en0"]]
+
+
+@patch("server.subprocess.run")
+def test_enumerate_lan_ips_darwin_empty_when_no_active_iface(mock_run, app):
+    def side_effect(cmd, **kwargs):
+        if cmd == ["ifconfig", "-l"]:
+            return MagicMock(returncode=0, stdout="lo0 awdl0 utun0\n")
+        return MagicMock(returncode=1, stdout="")
+
+    mock_run.side_effect = side_effect
+    assert app._enumerate_lan_ips_darwin() == []
+
+
+@patch("server.subprocess.run")
+def test_enumerate_lan_ips_darwin_skips_link_local(mock_run, app):
+    def side_effect(cmd, **kwargs):
+        if cmd == ["ifconfig", "-l"]:
+            return MagicMock(returncode=0, stdout="en0 en1\n")
+        if cmd == ["ipconfig", "getifaddr", "en0"]:
+            return MagicMock(returncode=0, stdout="169.254.12.34\n")
+        if cmd == ["ipconfig", "getifaddr", "en1"]:
+            return MagicMock(returncode=0, stdout="10.0.0.5\n")
+        raise AssertionError(cmd)
+
+    mock_run.side_effect = side_effect
+    assert app._enumerate_lan_ips_darwin() == ["10.0.0.5"]
+
+
+@patch("server._enumerate_lan_ips")
+def test_get_lan_ip_prefers_hotspot_subnet(mock_enum, app):
+    mock_enum.return_value = ["192.168.1.134", "10.42.0.1"]
+    result = app._get_lan_ip()
+    assert result == {"ip": "10.42.0.1", "detected": True}
+
+
+@patch("server._enumerate_lan_ips")
+def test_get_lan_ip_uses_first_candidate_when_no_hotspot_match(mock_enum, app):
+    mock_enum.return_value = ["192.168.1.134"]
+    result = app._get_lan_ip()
+    assert result == {"ip": "192.168.1.134", "detected": True}
+
+
+@patch("server._enumerate_lan_ips")
+def test_get_lan_ip_reports_undetected_when_nothing_found(mock_enum, app):
+    mock_enum.return_value = []
+    result = app._get_lan_ip()
+    assert result == {"ip": "127.0.0.1", "detected": False}
+
+
+def test_build_pairing_uri_shape(app):
+    uri = app._build_pairing_uri("192.168.1.134", 5050, "815010", 1732650000)
+    assert uri.startswith("portableai://pair?")
+    assert "ip=192.168.1.134" in uri
+    assert "port=5050" in uri
+    assert "pin=815010" in uri
+    assert "exp=1732650000" in uri
+
+
+def test_build_pairing_web_url_shape(app):
+    url = app._build_pairing_web_url("192.168.1.134", 5050, "815010", 1732650000)
+    assert url.startswith("http://192.168.1.134:5050/?")
+    assert "pair_pin=815010" in url
+    assert "exp=1732650000" in url
+
+
+# ---------- Pairing PIN response includes QR-ready fields ----------
+
+
+@patch("server._get_lan_ip")
+def test_pairing_pin_response_includes_uri_and_detection_flag(mock_lan, client):
+    mock_lan.return_value = {"ip": "192.168.1.134", "detected": True}
+    resp = client.get("/api/pairing/pin")
+    data = resp.get_json()
+    assert data["lan_ip"] == "192.168.1.134"
+    assert data["lan_ip_detected"] is True
+    assert data["lan_url"] == "http://192.168.1.134:5050"
+    assert "127.0.0.1" not in data["lan_url"]
+    assert data["pairing_uri"].startswith("portableai://pair?")
+    assert data["pairing_web_url"].startswith("http://192.168.1.134:5050/?pair_pin=")
+
+
+def test_bind_host_is_all_interfaces(app):
+    assert app.BIND_HOST == "0.0.0.0"
+
+
+def test_normalize_and_loopback_helpers(app):
+    assert app._normalize_ip("::ffff:127.0.0.1") == "127.0.0.1"
+    assert app._normalize_ip("[::1]") == "::1"
+    assert app._is_loopback_ip("127.0.0.1")
+    assert app._is_loopback_ip("::1")
+    assert app._is_loopback_ip("::ffff:127.0.0.1")
+    assert not app._is_loopback_ip("192.168.1.50")
+
+
+def test_is_local_client_only_loopback(app):
+    assert app._is_local_client("127.0.0.1") is True
+    assert app._is_local_client("::1") is True
+    assert app._is_local_client("::ffff:127.0.0.1") is True
+    assert app._is_local_client("192.168.1.134") is False
+    assert app._is_local_client("192.168.1.50") is False
+
+
+def test_is_our_server_process_matches_frozen_binary(app, monkeypatch):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", "/tmp/_MEIxxx", raising=False)
+    monkeypatch.setattr(sys, "executable", "/home/gg/portableai")
+    assert app._is_our_server_process("/home/gg/portableai --port 5050")
+    assert app._is_our_server_process("./portableai")
+    assert not app._is_our_server_process("nginx")
+
+
+def test_is_our_server_process_matches_run_py(app):
+    assert app._is_our_server_process("./venv/bin/python run.py --restart")
+    assert app._is_our_server_process("python ui/server.py")
+    assert not app._is_our_server_process("python other.py")
+    assert not app._is_our_server_process("nginx")
+
+
+def test_is_our_server_process_server_py_only_from_ui_dir(app):
+    ui_dir = str(Path(app.ROOT) / "ui")
+    assert app._is_our_server_process("python server.py", cwd=ui_dir)
+    assert not app._is_our_server_process("python server.py", cwd="/tmp")
+
+
+@patch("server._pids_listening_on", return_value=[])
+@patch("server._bind_fails", return_value=False)
+def test_stop_our_server_idle_returns_false(mock_bind, mock_pids, app):
+    assert app.stop_our_server(5050, quiet_if_idle=True) is False
+
+
+def test_bind_fails_sets_reuseaddr_like_flask(app):
+    src = inspect.getsource(app._bind_fails)
+    assert "SO_REUSEADDR" in src
+
+
+def test_bind_fails_false_on_an_unused_port(app):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    assert app._bind_fails(port) is False
+
+
+def test_classify_listeners_empty_when_no_pids(app, monkeypatch):
+    monkeypatch.setattr(app, "_pids_listening_on", lambda port: [])
+    assert app._classify_listeners(5050) == ([], [])
+
+
+@patch("server._get_lan_ip")
+def test_pairing_pin_flags_undetected_ip(mock_lan, client):
+    mock_lan.return_value = {"ip": "127.0.0.1", "detected": False}
+    resp = client.get("/api/pairing/pin")
+    assert resp.get_json()["lan_ip_detected"] is False
+
+
+def test_qr_endpoint_is_localhost_only(client):
+    resp = client.get("/api/pairing/qr.svg", environ_overrides=LAN_ENV)
+    assert resp.status_code == 403
+
+
+def test_qr_endpoint_returns_svg_from_localhost(client):
+    resp = client.get("/api/pairing/qr.svg")
+    assert resp.status_code == 200
+    assert resp.content_type.startswith("image/svg+xml")
+    assert b"<svg" in resp.data or b"<?xml" in resp.data
+
+
+@patch("qrcode.make")
+def test_qr_endpoint_encodes_web_url_not_deep_link(mock_make, client):
+    """Regression test for the real-hardware finding that portableai://
+    shows 'no user data found' with no app installed to claim it -- the
+    QR must encode the plain http:// pairing URL instead."""
+    import qrcode.image.svg
+
+    mock_make.return_value = qrcode.make("http://placeholder", image_factory=qrcode.image.svg.SvgPathImage)
+    client.get("/api/pairing/qr.svg")
+    encoded_data = mock_make.call_args[0][0]
+    assert encoded_data.startswith("http://")
+    assert "pair_pin=" in encoded_data
+    assert not encoded_data.startswith("portableai://")# ---------- Model catalog / download ----------
+
+
+@patch("server.OllamaClient")
+def test_catalog_marks_installed_models(mock_cls, client):
+    instance = mock_cls.return_value
+    instance.is_available.return_value = True
+    instance.list_models.return_value = [{"name": "llama3.2:3b"}]
+
+    catalog = client.get("/api/models/catalog").get_json()
+    assert len(catalog) > 0
+    by_name = {m["name"]: m for m in catalog}
+    assert by_name["llama3.2:3b"]["installed"] is True
+    # something in the curated catalog that almost certainly isn't installed
+    assert by_name["deepseek-r1:7b"]["installed"] is False
+
+
+@patch("server.OllamaClient")
+def test_catalog_still_returns_entries_when_ollama_down(mock_cls, client):
+    mock_cls.return_value.is_available.return_value = False
+    catalog = client.get("/api/models/catalog").get_json()
+    assert len(catalog) > 0
+    assert all(entry["installed"] is False for entry in catalog)
+
+
+@patch("server.OllamaClient")
+def test_pull_model_requires_name(mock_cls, client):
+    resp = client.post("/api/models/pull", data=json.dumps({}), content_type="application/json")
+    assert resp.status_code == 400
+
+
+@patch("server.OllamaClient")
+def test_pull_model_503_when_ollama_down(mock_cls, client):
+    mock_cls.return_value.is_available.return_value = False
+    resp = client.post(
+        "/api/models/pull",
+        data=json.dumps({"name": "qwen2.5:0.5b"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 503
+
+
+def _ndjson_events(resp):
+    text = resp.get_data(as_text=True)
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+@patch("server.OllamaClient")
+def test_pull_model_happy_path(mock_cls, client):
+    instance = mock_cls.return_value
+    instance.is_available.return_value = True
+    instance.iter_pull_model.return_value = iter([{"pulled": "qwen2.5:0.5b"}])
+
+    resp = client.post(
+        "/api/models/pull",
+        data=json.dumps({"name": "qwen2.5:0.5b"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 200
+    assert "ndjson" in (resp.content_type or "")
+    events = _ndjson_events(resp)
+    assert events[-1]["pulled"] == "qwen2.5:0.5b"
+    instance.iter_pull_model.assert_called_once_with("qwen2.5:0.5b")
+
+
+@patch("server.OllamaClient")
+def test_pull_model_streams_retry_status(mock_cls, client):
+    instance = mock_cls.return_value
+    instance.is_available.return_value = True
+    instance.iter_pull_model.return_value = iter(
+        [
+            {
+                "status": "retrying",
+                "message": "Connection issue, retrying (2/3)...",
+                "attempt": 2,
+                "max_attempts": 3,
+            },
+            {"pulled": "qwen2.5:0.5b"},
+        ]
+    )
+
+    resp = client.post(
+        "/api/models/pull",
+        data=json.dumps({"name": "qwen2.5:0.5b"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 200
+    events = _ndjson_events(resp)
+    assert events[0]["status"] == "retrying"
+    assert "2/3" in events[0]["message"]
+    assert events[-1]["pulled"] == "qwen2.5:0.5b"
+
+
+@patch("server.OllamaClient")
+def test_pull_model_propagates_ollama_error(mock_cls, client):
+    from ollama_client import OllamaError
+
+    instance = mock_cls.return_value
+    instance.is_available.return_value = True
+    instance.iter_pull_model.side_effect = OllamaError("model not found")
+
+    resp = client.post(
+        "/api/models/pull",
+        data=json.dumps({"name": "not-a-real-model"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 200
+    events = _ndjson_events(resp)
+    assert "not found" in events[-1]["error"]
+
+
+# ---------- Per-model update check (digest-diff via re-pull) ----------
+
+
+@patch("server.OllamaClient")
+def test_check_update_requires_name(mock_cls, client):
+    resp = client.post("/api/models/check-update", data=json.dumps({}), content_type="application/json")
+    assert resp.status_code == 400
+
+
+@patch("server.OllamaClient")
+def test_check_update_503_when_ollama_down(mock_cls, client):
+    mock_cls.return_value.is_available.return_value = False
+    resp = client.post(
+        "/api/models/check-update",
+        data=json.dumps({"name": "llama3.2:3b"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 503
+
+
+@patch("server.OllamaClient")
+def test_check_update_404_when_not_installed(mock_cls, client):
+    instance = mock_cls.return_value
+    instance.is_available.return_value = True
+    instance.list_models.return_value = [{"name": "llama3.2:3b", "digest": "sha1"}]
+    resp = client.post(
+        "/api/models/check-update",
+        data=json.dumps({"name": "qwen2.5:0.5b"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 404
+
+
+@patch("server.OllamaClient")
+def test_check_update_detects_digest_change(mock_cls, client):
+    instance = mock_cls.return_value
+    instance.is_available.return_value = True
+    instance.list_models.side_effect = [
+        [{"name": "llama3.2:3b", "digest": "sha-old"}],
+        [{"name": "llama3.2:3b", "digest": "sha-new"}],
+    ]
+    resp = client.post(
+        "/api/models/check-update",
+        data=json.dumps({"name": "llama3.2:3b"}),
+        content_type="application/json",
+    )
+    data = resp.get_json()
+    assert data["updated"] is True
+    assert data["digest_before"] == "sha-old"
+    assert data["digest_after"] == "sha-new"
+    instance.pull_model.assert_called_once_with("llama3.2:3b")
+
+
+@patch("server.OllamaClient")
+def test_check_update_reports_no_change(mock_cls, client):
+    instance = mock_cls.return_value
+    instance.is_available.return_value = True
+    instance.list_models.side_effect = [
+        [{"name": "llama3.2:3b", "digest": "sha-same"}],
+        [{"name": "llama3.2:3b", "digest": "sha-same"}],
+    ]
+    resp = client.post(
+        "/api/models/check-update",
+        data=json.dumps({"name": "llama3.2:3b"}),
+        content_type="application/json",
+    )
+    assert resp.get_json()["updated"] is False
+
+
+# ---------- Optional centralized app/catalog update check ----------
+
+
+def test_updates_check_disabled_by_default(client):
+    resp = client.get("/api/updates/check")
+    assert resp.get_json() == {"enabled": False}
+
+
+@patch("server.requests.get")
+def test_updates_check_reports_available_updates(mock_get, client):
+    client.post(
+        "/api/settings",
+        data=json.dumps({"update_check_url": "https://example.com/update-manifest.json"}),
+        content_type="application/json",
+    )
+    mock_get.return_value = MagicMock(
+        status_code=200,
+        raise_for_status=lambda: None,
+        json=lambda: {
+            "app_version": "99.0.0",
+            "catalog_version": "9999-01-01",
+            "message": "New personas added",
+            "notes_url": "https://example.com/notes",
+        },
+    )
+    resp = client.get("/api/updates/check")
+    data = resp.get_json()
+    assert data["enabled"] is True
+    assert data["reachable"] is True
+    assert data["app_update_available"] is True
+    assert data["catalog_update_available"] is True
+    assert data["message"] == "New personas added"
+
+
+@patch("server.requests.get")
+def test_updates_check_matching_versions_reports_no_update(mock_get, client, app):
+    client.post(
+        "/api/settings",
+        data=json.dumps({"update_check_url": "https://example.com/update-manifest.json"}),
+        content_type="application/json",
+    )
+    mock_get.return_value = MagicMock(
+        status_code=200,
+        raise_for_status=lambda: None,
+        json=lambda: {"app_version": app.APP_VERSION, "catalog_version": app.CATALOG_VERSION},
+    )
+    resp = client.get("/api/updates/check")
+    data = resp.get_json()
+    assert data["app_update_available"] is False
+    assert data["catalog_update_available"] is False
+
+
+@patch("server.requests.get")
+def test_updates_check_handles_unreachable_url(mock_get, client):
+    import requests as real_requests
+
+    client.post(
+        "/api/settings",
+        data=json.dumps({"update_check_url": "https://example.com/update-manifest.json"}),
+        content_type="application/json",
+    )
+    mock_get.side_effect = real_requests.RequestException("timed out")
+    resp = client.get("/api/updates/check")
+    data = resp.get_json()
+    assert data == {"enabled": True, "reachable": False}
+
+
+@patch("server.requests.get")
+def test_updates_check_github_repo_uses_releases_api(mock_get, client, app):
+    client.post(
+        "/api/settings",
+        data=json.dumps({"update_check_url": "generalistcodes/portableai"}),
+        content_type="application/json",
+    )
+    mock_get.return_value = MagicMock(
+        status_code=200,
+        raise_for_status=lambda: None,
+        json=lambda: {
+            "tag_name": "v9.9.9",
+            "html_url": "https://github.com/generalistcodes/portableai/releases/tag/v9.9.9",
+        },
+    )
+    data = client.get("/api/updates/check").get_json()
+    called = mock_get.call_args[0][0]
+    assert called == "https://api.github.com/repos/generalistcodes/portableai/releases/latest"
+    assert data["enabled"] is True
+    assert data["app_update_available"] is True
+    assert data["remote_app_version"] == "v9.9.9"
+    assert data["catalog_update_available"] is False
+    assert data["notes_url"] == "https://github.com/generalistcodes/portableai/releases/tag/v9.9.9"
+    assert data["message"] == "A new version is available."
+
+
+@patch("server.requests.get")
+def test_updates_check_github_matching_tag_is_not_an_update(mock_get, client, app):
+    client.post(
+        "/api/settings",
+        data=json.dumps({"update_check_url": "https://github.com/generalistcodes/portableai"}),
+        content_type="application/json",
+    )
+    mock_get.return_value = MagicMock(
+        status_code=200,
+        raise_for_status=lambda: None,
+        json=lambda: {
+            "tag_name": f"v{app.APP_VERSION}",
+            "html_url": "https://github.com/generalistcodes/portableai/releases/tag/v" + app.APP_VERSION,
+        },
+    )
+    data = client.get("/api/updates/check").get_json()
+    assert data["app_update_available"] is False
+    assert data["message"] is None
+
+
+def test_updates_check_still_disabled_when_url_blank(client):
+    assert client.get("/api/updates/check").get_json() == {"enabled": False}
+
+
+def test_semver_treats_0_10_0_as_newer_than_0_9_0(app):
+    """Plain string compare ranks '0.10.0' below '0.9.0' because '1' < '9'."""
+    assert app._is_newer_app_version("0.10.0", "0.9.0") is True
+    assert app._is_newer_app_version("v0.10.0", "0.9.0") is True
+    assert app._is_newer_app_version("0.9.0", "0.10.0") is False
+    assert app._is_newer_app_version("0.9.0", "0.9.0") is False
+    assert "0.10.0" < "0.9.0"  # the bug this test exists to reject
+
+
+@patch("server.requests.get")
+def test_updates_check_detects_0_10_0_as_newer_than_0_9_0(mock_get, client, app, monkeypatch):
+    monkeypatch.setattr(app, "APP_VERSION", "0.9.0")
+    client.post(
+        "/api/settings",
+        data=json.dumps({"update_check_url": "generalistcodes/portableai"}),
+        content_type="application/json",
+    )
+    mock_get.return_value = MagicMock(
+        status_code=200,
+        raise_for_status=lambda: None,
+        json=lambda: {
+            "tag_name": "v0.10.0",
+            "html_url": "https://github.com/generalistcodes/portableai/releases/tag/v0.10.0",
+        },
+    )
+    data = client.get("/api/updates/check").get_json()
+    assert data["app_update_available"] is True
+    assert data["remote_app_version"] == "v0.10.0"
+    assert data["message"] == "A new version is available."
+
+
+def test_updates_check_against_live_github_releases(client, app):
+    """Hits the real Releases API. Confirms tag_name vs APP_VERSION and html_url."""
+    client.post(
+        "/api/settings",
+        data=json.dumps({"update_check_url": "generalistcodes/portableai"}),
+        content_type="application/json",
+    )
+    resp = client.get("/api/updates/check")
+    data = resp.get_json()
+    assert data["enabled"] is True
+    assert data["reachable"] is True, data
+    assert data["remote_app_version"]
+    assert str(data["remote_app_version"]).startswith("v")
+    assert data["notes_url"].startswith("https://github.com/generalistcodes/portableai/releases/")
+    expected_available = app._is_newer_app_version(data["remote_app_version"], app.APP_VERSION)
+    assert data["app_update_available"] is expected_available
+    if expected_available:
+        assert data["message"] == "A new version is available."
+
+
+# ---------- Listen-port fallback (5050 occupied) ----------
+
+
+def test_pick_listen_port_falls_back_when_preferred_is_taken(app, capsys):
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    preferred = None
+    for candidate in range(15120, 15220):
+        try:
+            holder.bind(("0.0.0.0", candidate))
+            holder.listen(1)
+            preferred = candidate
+            break
+        except OSError:
+            continue
+    assert preferred is not None
+    try:
+        got = app.pick_listen_port(preferred, tries=5)
+        assert got != preferred
+        assert got == preferred + 1 or got > preferred
+        assert app.listen_port() == got
+        assert not app._bind_fails(got)
+        out = capsys.readouterr().out
+        assert f"Port {preferred} was already in use" in out
+        assert f"running on {got} instead" in out
+    finally:
+        holder.close()
+        app.set_listen_port(app.PORT)
+
+
+@patch("server._get_lan_ip")
+def test_pairing_urls_use_fallback_listen_port(mock_lan, client, app):
+    mock_lan.return_value = {"ip": "192.168.1.134", "detected": True}
+    app.set_listen_port(5051)
+    data = client.get("/api/pairing/pin").get_json()
+    assert data["lan_url"] == "http://192.168.1.134:5051"
+    assert data["pairing_web_url"].startswith("http://192.168.1.134:5051/?pair_pin=")
+    assert "port=5051" in data["pairing_uri"]
+    assert ":5050" not in data["lan_url"]
+    assert ":5050" not in data["pairing_web_url"]
+
+
+@patch("qrcode.make")
+@patch("server._get_lan_ip")
+def test_qr_encodes_fallback_listen_port(mock_lan, mock_make, client, app):
+    import qrcode.image.svg
+
+    mock_lan.return_value = {"ip": "192.168.1.134", "detected": True}
+    app.set_listen_port(5051)
+    mock_make.return_value = qrcode.make(
+        "http://placeholder", image_factory=qrcode.image.svg.SvgPathImage
+    )
+    client.get("/api/pairing/qr.svg")
+    encoded = mock_make.call_args[0][0]
+    assert encoded.startswith("http://192.168.1.134:5051/?pair_pin=")
+    assert ":5050" not in encoded
+
+
+# ---------- Direct ui/server.py launch is refused ----------
+
+
+def test_refuse_direct_launch_exits_pointing_at_run_py(app, capsys):
+    with pytest.raises(SystemExit) as exc:
+        app.refuse_direct_launch()
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "python run.py" in err
+    assert "ui/server.py" in err
+    assert "bundled Ollama" in err
+    assert "Do not start" in err
+
+
+def test_ui_server_py_main_exits_without_starting_flask():
+    """Real `__main__` path: `python ui/server.py` must refuse, not bind Flask."""
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "ui" / "server.py")],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    combined = result.stderr + result.stdout
+    assert result.returncode == 1
+    assert "python run.py" in combined
+    assert "ui/server.py" in combined
+    assert "bundled Ollama" in combined
+    assert "Running on" not in combined
+    assert "Serving Flask" not in combined

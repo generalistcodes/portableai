@@ -1,0 +1,19 @@
+PortableAI Windows package — incomplete
+
+This .exe is a PyInstaller one-file build of the Python UI. It is not a
+full Windows installer.
+
+What works
+- The chat UI process, same as `python run.py` on Windows.
+- Talking to a separately installed Ollama over HTTP.
+
+What is not built yet (see docs/ROADMAP.md)
+- Vendored Ollama download/lifecycle. src/ollama_runtime.py only
+  supports Linux and macOS. First run prints that you must install
+  Ollama yourself: https://ollama.com/download
+- LAN IP detection for phone pairing. ui/server.py's _enumerate_lan_ips
+  has Linux (`ip` / `hostname -I`) and macOS (`ifconfig` / `ipconfig`)
+  branches only. On Windows it falls through to the Linux commands,
+  which are not present, so the pairing QR will not get a LAN address.
+
+Do not treat this artifact as a finished Windows product.

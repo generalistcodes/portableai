@@ -1,0 +1,26 @@
+[
+  {
+    "id": "severe-bleeding",
+    "title": "Severe bleeding",
+    "answer": "PLACEHOLDER -- replace with vetted first-aid content from a real source before relying on this.",
+    "verified": false,
+    "verified_by": null,
+    "verified_source": null
+  },
+  {
+    "id": "water-purification",
+    "title": "Water purification",
+    "answer": "PLACEHOLDER -- replace with vetted first-aid content from a real source before relying on this.",
+    "verified": false,
+    "verified_by": null,
+    "verified_source": null
+  },
+  {
+    "id": "lost-after-dark",
+    "title": "Lost after dark",
+    "answer": "PLACEHOLDER -- replace with vetted first-aid content from a real source before relying on this.",
+    "verified": false,
+    "verified_by": null,
+    "verified_source": null
+  }
+]

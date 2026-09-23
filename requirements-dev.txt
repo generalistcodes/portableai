@@ -1,0 +1,5 @@
+# Build-time only. End users of the compiled Linux binary do not need these.
+-r requirements.txt
+pyinstaller>=6.0
+pillow>=10.0
+git-cliff>=2.14

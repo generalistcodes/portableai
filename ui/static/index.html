@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" class="awaiting-first-run">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Portable AI</title>
+<script>
+  (function () {
+    try {
+      var theme = localStorage.getItem("portableai.theme");
+      if (theme === "dark" || theme === "light" || theme === "ube") {
+        document.documentElement.setAttribute("data-theme", theme);
+      }
+    } catch (e) {}
+    try {
+      if (localStorage.getItem("portableai.sidebar-collapsed") === "1") {
+        document.documentElement.classList.add("sidebar-collapsed");
+      }
+    } catch (e) {}
+  })();
+</script>
+<link rel="icon" type="image/png" href="logo.png?v=badge-1">
+<link rel="stylesheet" href="style.css?v=first-run-1">
+</head>
+<body>
+<div class="app">
+  <div id="sidebarBackdrop" class="sidebar-backdrop"></div>
+
+  <aside id="sidebar" class="sidebar" aria-label="Sidebar">
+    <div class="sidebar-inner">
+    <div class="sidebar-brand-row">
+      <div class="sidebar-brand">
+        <img src="logo.png?v=badge-1" alt="Portable AI" class="brand-icon">
+        <div class="brand-wordmark">
+          <span class="brand-name">PORTABLE AI</span>
+          <span class="brand-tagline">OFFLINE-FIRST</span>
+        </div>
+      </div>
+      <button id="sidebarToggle" class="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="true" title="Hide sidebar">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/>
+          <path d="M9.5 4.5v15"/>
+        </svg>
+      </button>
+    </div>
+    <div class="sidebar-header">
+      <button id="newChatBtn" class="new-chat-btn" type="button">
+        <span class="plus">+</span> New chat
+      </button>
+    </div>
+
+    <div class="sidebar-section persona-section">
+      <div class="sidebar-label">Start new chat as</div>
+      <div id="personaList" class="persona-list"><!-- populated by app.js --></div>
+    </div>
+
+    <div class="sidebar-divider"></div>
+
+    <div class="sidebar-section chats-section">
+      <div class="sidebar-label-row">
+        <span class="sidebar-label">Chats</span>
+        <label class="archived-toggle">
+          <input type="checkbox" id="archivedToggle"> Archived
+        </label>
+      </div>
+      <input id="searchInput" class="search-input" type="text" placeholder="Search chats…">
+      <div id="conversationList" class="conversation-list"><!-- populated by app.js --></div>
+    </div>
+
+    <div class="sidebar-footer">
+      <button id="statusPill" class="status-pill status-unknown">
+        <span class="dot"></span><span id="statusText">checking Ollama…</span>
+      </button>
+      <span id="deviceCountPill" class="status-pill device-count-pill" title="Paired devices" aria-live="polite">
+        <svg class="device-count-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M10 13a5 5 0 0 0 7.07 0l1.41-1.41a5 5 0 0 0-7.07-7.07L10 5.93"/>
+          <path d="M14 11a5 5 0 0 0-7.07 0L5.5 12.41a5 5 0 0 0 7.07 7.07L14 18.07"/>
+        </svg>
+        <span id="deviceCountText">0 connected</span>
+      </span>
+      <button id="logsBtn" class="sidebar-icon-btn">Logs</button>
+      <button id="connectDeviceBtn" class="sidebar-icon-btn" type="button">Connect a device</button>
+      <button id="settingsBtn" class="sidebar-icon-btn" type="button">Settings <span id="settingsUpdateDot" class="update-dot hidden" title="Update available">●</span></button>
+    </div>
+    </div>
+  </aside>
+
+  <main class="chat-area">
+    <div class="chat-header">
+      <button id="menuBtn" class="header-icon-btn menu-btn" type="button" aria-label="Open chats" aria-expanded="false" aria-controls="sidebar">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 7h16M4 12h16M4 17h16"/>
+        </svg>
+      </button>
+      <button id="sidebarOpenBtn" class="sidebar-toggle sidebar-toggle-open" type="button" aria-controls="sidebar" aria-expanded="false" title="Show sidebar">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/>
+          <path d="M9.5 4.5v15"/>
+        </svg>
+      </button>
+      <div class="chat-header-info">
+        <span id="chatPersonaName" class="chat-header-persona">Assistant</span>
+        <span id="chatModelBadge" class="chat-header-model">—</span>
+      </div>
+      <select id="modelSelect" class="model-select">
+        <option value="">Persona default</option>
+      </select>
+    </div>
+    <div id="pairingConnectedBanner" class="pairing-connected-banner hidden" role="status" aria-live="polite"></div>
+
+    <div id="messages" class="messages">
+      <div class="empty-state">
+        <h1 id="personaHeading">Assistant</h1>
+        <p id="personaSubheading" class="muted"></p>
+      </div>
+    </div>
+
+    <div class="composer-stack">
+      <div id="cardChips" class="card-chips hidden" aria-label="Quick reference"></div>
+      <form id="composer" class="composer">
+        <textarea id="input" placeholder="Message the persona…" rows="1"></textarea>
+        <button type="submit" id="sendBtn">Send</button>
+      </form>
+    </div>
+  </main>
+
+</div>
+
+<div id="setupOverlay" class="first-run-overlay hidden" hidden>
+  <div class="first-run-card">
+    <div class="setup-logo-wrap pairing-qr-wrap is-listening">
+      <img src="logo.png?v=badge-1" alt="" class="setup-logo pairing-qr">
+    </div>
+    <h1>Setting up PortableAI for the first time…</h1>
+    <p id="setupStatusText" class="muted">Downloading Ollama</p>
+    <div class="setup-progress-track" aria-hidden="true">
+      <div id="setupProgressBar" class="setup-progress-bar"></div>
+    </div>
+    <p id="setupPercent" class="muted small"></p>
+  </div>
+</div>
+
+<div id="onboardOverlay" class="first-run-overlay hidden" hidden>
+  <div class="first-run-card onboard-card">
+    <h1>No models installed yet</h1>
+    <p class="muted">Pick one to get started. You can download others later from Settings.</p>
+    <div id="onboardCatalog" class="onboard-catalog"></div>
+  </div>
+</div>
+
+<!-- Settings modal -->
+<div id="settingsModal" class="modal-backdrop hidden">
+  <div class="modal settings-window">
+    <aside class="settings-nav">
+      <label class="settings-nav-search">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="11" cy="11" r="7"/>
+          <path d="M20 20l-3.5-3.5"/>
+        </svg>
+        <input id="settingsSearch" type="search" placeholder="Search settings…" autocomplete="off">
+      </label>
+
+      <div class="settings-nav-group">
+        <div class="settings-nav-group-label">Options</div>
+        <button type="button" class="settings-nav-item active" data-pane="general" data-search="general ollama url startup theme appearance dark light ube bundled external override">
+          <svg class="settings-nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/>
+            <line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/>
+            <line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/>
+            <line x1="2" y1="14" x2="6" y2="14"/><line x1="10" y1="8" x2="14" y2="8"/><line x1="18" y1="16" x2="22" y2="16"/>
+          </svg>
+          <span>General</span>
+        </button>
+        <button type="button" class="settings-nav-item" data-pane="personas" data-search="personas create edit cards default prompt system">
+          <svg class="settings-nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+            <circle cx="12" cy="7" r="4"/>
+          </svg>
+          <span>Personas</span>
+        </button>
+        <button type="button" class="settings-nav-item" data-pane="installed" data-search="installed models storage gguf disk">
+          <svg class="settings-nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>
+            <path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>
+          </svg>
+          <span>Installed models</span>
+        </button>
+        <button type="button" class="settings-nav-item" data-pane="download" data-search="download catalog pull library">
+          <svg class="settings-nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" x2="12" y1="15" y2="3"/>
+          </svg>
+          <span>Download</span>
+        </button>
+        <button type="button" class="settings-nav-item" data-pane="updates" data-search="updates version catalog check">
+          <svg class="settings-nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/>
+            <polyline points="21 3 21 8 16 8"/>
+          </svg>
+          <span>Updates</span>
+          <span id="settingsNavUpdateDot" class="settings-nav-badge update-dot hidden" title="Update available">●</span>
+        </button>
+      </div>
+
+      <div class="settings-nav-group">
+        <div class="settings-nav-group-label">Connect</div>
+        <button type="button" class="settings-nav-item" data-pane="pairing" data-search="phone pairing pin lan device ios qr family password">
+          <svg class="settings-nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="7" y="2" width="10" height="20" rx="2"/>
+            <path d="M11 18h2"/>
+          </svg>
+          <span>Phone pairing</span>
+        </button>
+      </div>
+    </aside>
+    <div class="settings-main">
+      <div class="settings-main-header">
+        <h2 id="settingsPaneTitle">General</h2>
+        <button class="close-btn" data-close="settingsModal" type="button">×</button>
+      </div>
+      <div class="settings-main-body">
+        <section id="pane-general" class="settings-pane">
+          <div class="setting-item">
+            <div class="setting-item-info">
+              <div class="setting-item-name">Theme</div>
+              <div class="setting-item-description">Appearance of the chat window. Saved on this device and applies immediately.</div>
+            </div>
+            <select id="themeSelect" class="setting-input" aria-label="Theme">
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+              <option value="ube">Ube</option>
+            </select>
+          </div>
+          <div class="setting-item">
+            <div class="setting-item-info">
+              <div class="setting-item-name">Ollama base URL</div>
+              <div class="setting-item-description">Local Ollama API the UI talks to. Default is http://localhost:11434.</div>
+            </div>
+            <input id="baseUrlInput" class="setting-input" type="text" placeholder="http://localhost:11434">
+          </div>
+          <div class="setting-item">
+            <div class="setting-item-info">
+              <div class="setting-item-name" id="ollamaModeLabel">Ollama: …</div>
+              <div class="setting-item-description">Read-only launch mode. Bundled is the default. Set PORTABLEAI_EXTERNAL_OLLAMA_URL before start to use your own Ollama — this is not a Settings toggle.</div>
+            </div>
+          </div>
+          <div class="setting-item">
+            <div class="setting-item-info">
+              <div class="setting-item-name">Build personas on startup</div>
+              <div class="setting-item-description">Create persona models when the server starts. Off means they build lazily on first chat. Personas live in the personas/ folder as .Modelfile files.</div>
+            </div>
+            <input id="autoBuildInput" class="toggle" type="checkbox">
+          </div>
+        </section>
+
+        <section id="pane-personas" class="settings-pane hidden">
+          <div id="personasListView">
+            <p class="pane-lede">
+              Personas are shared by every device on this server. Creating or
+              editing them is only available from this machine.
+            </p>
+            <div id="personasSettingsList" class="models-table"></div>
+            <div class="setting-item">
+              <button id="addPersonaBtn" class="primary-btn" type="button">Add persona</button>
+            </div>
+          </div>
+          <div id="personaEditorView" class="hidden">
+            <button id="personaEditorBack" class="text-back-btn" type="button">← All personas</button>
+            <label class="field">
+              <span>Display name</span>
+              <input id="personaDisplayName" class="setting-input setting-input-full" type="text" maxlength="80">
+            </label>
+            <label class="field">
+              <span>Base model</span>
+              <select id="personaBaseModel" class="setting-input setting-input-full"></select>
+            </label>
+            <label class="field">
+              <span>System prompt</span>
+              <textarea id="personaSystemPrompt" class="setting-input setting-input-full persona-system-input" rows="8"></textarea>
+            </label>
+            <label class="field field-row">
+              <span>Default persona</span>
+              <input id="personaIsDefault" class="toggle" type="checkbox">
+            </label>
+            <p id="personaEditorError" class="pairing-error" role="alert"></p>
+            <div class="persona-editor-actions">
+              <button id="personaSaveBtn" class="primary-btn" type="button">Save persona</button>
+              <button id="personaDeleteBtn" class="danger-btn" type="button">Delete</button>
+            </div>
+            <div id="personaCardsSection" class="persona-cards-section hidden">
+              <div class="setting-item-name">Quick reference cards</div>
+              <p class="setting-item-description">Instant answers shown as chips above the chat box. Unverified cards warn in the chat, not only here.</p>
+              <div id="personaCardsList" class="models-table"></div>
+              <button id="addCardBtn" class="primary-btn" type="button">Add card</button>
+            </div>
+          </div>
+          <div id="cardEditorView" class="hidden">
+            <button id="cardEditorBack" class="text-back-btn" type="button">← Persona</button>
+            <label class="field">
+              <span>Title</span>
+              <input id="cardTitleInput" class="setting-input setting-input-full" type="text" maxlength="120">
+            </label>
+            <label class="field">
+              <span>Answer</span>
+              <textarea id="cardAnswerInput" class="setting-input setting-input-full persona-system-input" rows="6"></textarea>
+            </label>
+            <label class="field field-row">
+              <span>Verified</span>
+              <input id="cardVerifiedInput" class="toggle" type="checkbox">
+            </label>
+            <p class="setting-item-description">Marking verified requires who checked it and against what source. The API rejects verified cards without that audit trail.</p>
+            <label class="field">
+              <span>Verified by</span>
+              <input id="cardVerifiedByInput" class="setting-input setting-input-full" type="text" maxlength="120" placeholder="Name or role">
+            </label>
+            <label class="field">
+              <span>Verified source</span>
+              <input id="cardVerifiedSourceInput" class="setting-input setting-input-full" type="text" maxlength="500" placeholder="Manual, URL, or publication">
+            </label>
+            <p id="cardEditorError" class="pairing-error" role="alert"></p>
+            <div class="persona-editor-actions">
+              <button id="cardSaveBtn" class="primary-btn" type="button">Save card</button>
+              <button id="cardDeleteBtn" class="danger-btn" type="button">Delete card</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="pane-installed" class="settings-pane hidden">
+          <div class="setting-item">
+            <div class="setting-item-info">
+              <div class="setting-item-name">Storage path</div>
+              <div class="setting-item-description">Where Ollama keeps GGUF blobs on this machine.</div>
+            </div>
+            <code id="modelsPathHint" class="path-hint">—</code>
+          </div>
+          <div id="modelsTable" class="models-table"></div>
+        </section>
+
+        <section id="pane-download" class="settings-pane hidden">
+          <p class="pane-lede">
+            A curated list, not the full Ollama library — see
+            <a href="https://ollama.com/library" target="_blank" rel="noopener">ollama.com/library</a>
+            for everything else (pull it via <code>ollama pull &lt;name&gt;</code> instead).
+            Downloads can take several minutes for larger models; this page will
+            show "Downloading…" until it's done.
+          </p>
+          <input id="catalogSearch" class="setting-search" type="search" placeholder="Search models…">
+          <div id="catalogTable" class="models-table"></div>
+        </section>
+
+        <section id="pane-updates" class="settings-pane hidden">
+          <p class="pane-lede">
+            Off by default — nothing here makes a network call unless you set a URL
+            or a GitHub repo. Use <code>owner/repo</code> (for example
+            <code>generalistcodes/portableai</code>) to compare this app against
+            GitHub Releases, or a JSON file you publish yourself with the shape
+            <code>{"app_version": "...", "catalog_version": "...", "message": "...", "notes_url": "..."}</code>.
+          </p>
+          <div class="setting-item setting-item-stack">
+            <div class="setting-item-info">
+              <div class="setting-item-name">Update check URL</div>
+              <div class="setting-item-description">Optional. Empty means the feature is disabled and Check now will not hit the network. A GitHub <code>owner/repo</code> uses that repo’s latest Release; any other http(s) URL is treated as a JSON manifest.</div>
+            </div>
+            <input id="updateUrlInput" class="setting-input setting-input-full" type="text" placeholder="generalistcodes/portableai">
+          </div>
+          <div class="setting-item">
+            <div class="setting-item-info">
+              <div class="setting-item-name">Check automatically on startup</div>
+              <div class="setting-item-description">When on, the app requests your URL once at load and shows a dot next to Settings if a newer version is advertised.</div>
+            </div>
+            <input id="autoCheckUpdatesInput" class="toggle" type="checkbox">
+          </div>
+          <div class="setting-item">
+            <div class="setting-item-info">
+              <div class="setting-item-name">Check now</div>
+              <div class="setting-item-description" id="updateStatusText">Compares your hosted JSON against this app’s baked-in versions.</div>
+            </div>
+            <button id="checkUpdatesBtn" class="download-btn" type="button">Check now</button>
+          </div>
+        </section>
+
+        <section id="pane-pairing" class="settings-pane hidden">
+          <p class="pane-lede">
+            Scan the QR code in the PortableAI iOS app, or on your phone's
+            browser go to <code id="lanUrlText">—</code> and enter this PIN once.
+          </p>
+          <div class="setting-item setting-item-stack">
+            <div class="setting-item-info">
+              <div class="setting-item-name">Pairing PIN</div>
+              <div class="setting-item-description">Scan the QR or type the PIN. It expires on its own — use New PIN to mint another.</div>
+            </div>
+            <div class="pairing-pin-row">
+              <div id="pairingQrWrap" class="pairing-qr-wrap">
+                <img id="pairingQrImg" class="pairing-qr" src="" width="160" height="160" alt="Pairing QR code">
+                <div class="pairing-success-toast hidden" aria-live="polite">
+                  <svg class="pairing-success-check" viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <path d="M7 12.5l3.2 3.2L17 8.8"></path>
+                  </svg>
+                  <span class="pairing-success-name"></span>
+                </div>
+              </div>
+              <div class="pairing-pin-col">
+                <div class="pairing-pin-cluster">
+                  <span id="pairingPinText" class="pairing-pin">——————</span>
+                  <div class="pairing-countdown" hidden>
+                    <span class="pairing-countdown-dot" aria-hidden="true"></span>
+                    <span class="pairing-countdown-label">Expires in</span>
+                    <span id="pairingPinCountdown" class="pairing-countdown-time" aria-live="polite"></span>
+                  </div>
+                </div>
+                <button id="regeneratePinBtn" class="primary-btn" type="button">New PIN</button>
+              </div>
+            </div>
+            <div id="lanIpWarning" class="lan-ip-warning hidden">
+              Could not detect a LAN address on this machine — phones won't be
+              able to reach this server. Check that WiFi is connected or a
+              hotspot is running, then click "New PIN" to retry.
+            </div>
+          </div>
+          <div class="setting-item setting-item-stack">
+            <div class="setting-item-info">
+              <div class="setting-item-name">Family password</div>
+              <div class="setting-item-description">
+                Optional. Phones can pair with this password instead of a PIN.
+                It does not expire and can be reused by multiple devices.
+                Leave empty and save to remove it.
+              </div>
+            </div>
+            <p id="familyPasswordStatus" class="muted small">Not set</p>
+            <div class="pairing-pin-row">
+              <input id="familyPasswordInput" class="setting-input setting-input-full" type="password" autocomplete="new-password" placeholder="Set a family password">
+              <button id="saveFamilyPasswordBtn" class="primary-btn" type="button">Save password</button>
+            </div>
+          </div>
+          <div class="setting-item setting-item-stack">
+            <div class="setting-item-info">
+              <div class="setting-item-name">Paired devices</div>
+              <div class="setting-item-description">Revoke a device to require a new PIN or family password the next time it connects.</div>
+            </div>
+            <div id="pairedDevicesList" class="models-table"></div>
+          </div>
+        </section>
+      </div>
+      <div id="settingsFooter" class="settings-main-footer">
+        <button id="saveSettingsBtn" class="primary-btn" type="button">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Logs modal -->
+<div id="logsModal" class="modal-backdrop hidden">
+  <div class="modal modal-wide">
+    <div class="modal-header">
+      <h2>Request logs</h2>
+      <button class="close-btn" data-close="logsModal">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="logsList" class="logs-list"></div>
+    </div>
+    <div class="modal-footer">
+      <button id="clearLogsBtn" class="danger-btn">Clear logs</button>
+    </div>
+  </div>
+</div>
+
+<!-- Connect-a-device popover: PIN/QR only after an explicit click -->
+<div id="connectDeviceModal" class="modal-backdrop hidden">
+  <div class="modal connect-device-window" role="dialog" aria-labelledby="connectDeviceTitle" aria-modal="true">
+    <div class="modal-header">
+      <h2 id="connectDeviceTitle">Connect a device</h2>
+      <button class="close-btn" data-close="connectDeviceModal" type="button">×</button>
+    </div>
+    <div class="modal-body">
+      <p class="muted">
+        Scan the QR code in the PortableAI iOS app, or on your phone's
+        browser go to <code id="connectLanUrlText">—</code> and enter this PIN once.
+      </p>
+      <div class="pairing-pin-row">
+        <div id="connectQrWrap" class="pairing-qr-wrap">
+          <img id="connectQrImg" class="pairing-qr" src="" width="160" height="160" alt="Pairing QR code">
+          <div class="pairing-success-toast hidden" aria-live="polite">
+            <svg class="pairing-success-check" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="10"></circle>
+              <path d="M7 12.5l3.2 3.2L17 8.8"></path>
+            </svg>
+            <span class="pairing-success-name"></span>
+          </div>
+        </div>
+        <div class="pairing-pin-col">
+          <div class="pairing-pin-cluster">
+            <span id="connectPinText" class="pairing-pin">——————</span>
+            <div class="pairing-countdown" hidden>
+              <span class="pairing-countdown-dot" aria-hidden="true"></span>
+              <span class="pairing-countdown-label">Expires in</span>
+              <span id="connectPinCountdown" class="pairing-countdown-time" aria-live="polite"></span>
+            </div>
+          </div>
+          <button id="connectRegeneratePinBtn" class="primary-btn" type="button">New PIN</button>
+        </div>
+      </div>
+      <div id="connectLanIpWarning" class="lan-ip-warning hidden">
+        Could not detect a LAN address on this machine — phones won't be
+        able to reach this server. Check that WiFi is connected or a
+        hotspot is running, then click "New PIN" to retry.
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="pairingGate" class="modal-backdrop pairing-gate hidden">
+  <div class="modal" role="dialog" aria-labelledby="pairingGateTitle" aria-modal="true">
+    <div class="modal-header">
+      <h2 id="pairingGateTitle">Pair this device</h2>
+    </div>
+    <form id="pairingGateForm" class="pairing-form">
+      <div class="modal-body">
+        <p class="muted">This browser isn’t paired yet. On the computer running PortableAI, open Settings → Phone pairing and enter the 6-digit PIN or the family password here.</p>
+        <label class="field">
+          <span>PIN or password</span>
+          <input id="pairingGatePin" type="text" autocomplete="off" placeholder="PIN or password" required>
+        </label>
+        <label class="field">
+          <span>This device’s name (optional)</span>
+          <input id="pairingGateName" type="text" placeholder="My phone" autocomplete="off">
+        </label>
+        <p id="pairingGateError" class="pairing-error" role="alert"></p>
+      </div>
+      <div class="modal-footer">
+        <button id="pairingGateSubmit" class="primary-btn" type="submit">Pair</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="app.js?v=first-run-1"></script>
+</body>
+</html>
