@@ -15,10 +15,17 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from first_run import (  # noqa: E402
     DEFAULT_MODEL_NAME,
+    DEFAULT_MODEL_ENV,
+    PREFETCH_ONLY_ENV,
     PROMPT_HEADER,
     PROMPT_QUESTION,
+    default_model_name,
+    ensure_default_model,
     interactive_terminal,
     maybe_prompt_default_model,
+    prefetch_requested,
+    recommended_model_from_catalog,
+    run_prefetch,
     wait_for_tcp_port,
 )
 from setup_progress import (  # noqa: E402
@@ -230,6 +237,81 @@ def test_run_py_starts_ui_before_ollama_and_gates_tty_prompt():
     ) or "isatty" in (ROOT / "src" / "first_run.py").read_text(encoding="utf-8")
 
 
+def test_run_py_prefetch_exits_before_flask_and_browser():
+    text = (ROOT / "run.py").read_text(encoding="utf-8")
+    assert "--prefetch-only" in text
+    assert "PORTABLEAI_PREFETCH_ONLY" in text
+    assert text.index("run_prefetch") < text.index("ui_thread.start()")
+    assert text.index("prefetch_requested") < text.index("webbrowser.open")
+    src = (ROOT / "src" / "first_run.py").read_text(encoding="utf-8")
+    assert "start_managed_ollama" in src
+    assert "pull_model" in src
+    assert "webbrowser" not in src
+
+
+def test_catalog_first_recommended_is_llama32_3b():
+    catalog = [
+        {"name": "llama3.2:1b"},
+        {"name": "llama3.2:3b", "recommended": True},
+        {"name": "qwen2.5:0.5b", "recommended": True},
+    ]
+    assert recommended_model_from_catalog(catalog) == "llama3.2:3b"
+    assert default_model_name(env={}, catalog=catalog) == "llama3.2:3b"
+    assert default_model_name(env={DEFAULT_MODEL_ENV: "qwen2.5:0.5b"}, catalog=catalog) == "qwen2.5:0.5b"
+
+
+def test_prefetch_requested_flag_and_env():
+    assert prefetch_requested(True, {}) is True
+    assert prefetch_requested(False, {}) is False
+    assert prefetch_requested(False, {PREFETCH_ONLY_ENV: "1"}) is True
+    assert prefetch_requested(False, {PREFETCH_ONLY_ENV: "true"}) is True
+    assert prefetch_requested(False, {PREFETCH_ONLY_ENV: "0"}) is False
+
+
+def test_ensure_default_model_skips_when_installed():
+    client = MagicMock()
+    client.is_available.return_value = True
+    client.list_models.return_value = [{"name": DEFAULT_MODEL_NAME}]
+    assert ensure_default_model(client, DEFAULT_MODEL_NAME, stdout=_FakeStd(True)) == "has_models"
+    client.pull_model.assert_not_called()
+
+
+def test_ensure_default_model_reuses_client_pull_model():
+    client = MagicMock()
+    client.is_available.return_value = True
+    client.list_models.return_value = []
+    stdout = _FakeStd(True)
+    assert ensure_default_model(client, DEFAULT_MODEL_NAME, stdout=stdout) == "pulled"
+    client.pull_model.assert_called_once()
+    args, kwargs = client.pull_model.call_args
+    assert args[0] == DEFAULT_MODEL_NAME
+    assert "on_progress" in kwargs
+    assert DEFAULT_MODEL_NAME in stdout.buffer.getvalue()
+
+
+def test_run_prefetch_uses_existing_runtime_and_pull_then_stops():
+    handle = MagicMock()
+    client = MagicMock()
+    client.is_available.return_value = True
+    client.list_models.return_value = []
+    stdout = _FakeStd(True)
+
+    def fake_start(data_dir, host="127.0.0.1:11434"):
+        return "bundled", "http://127.0.0.1:11435", handle
+
+    code = run_prefetch(
+        data_dir=Path("/tmp"),
+        host="127.0.0.1:11434",
+        stdout=stdout,
+        start=fake_start,
+        client_factory=lambda _url: client,
+    )
+    assert code == 0
+    client.pull_model.assert_called_once()
+    handle.stop.assert_called_once()
+    assert "Prefetch complete." in stdout.buffer.getvalue()
+
+
 def test_noninteractive_redirect_never_blocks_on_input():
     """stdin from a pipe is not a TTY; the prompt must return immediately."""
     client = MagicMock()
@@ -253,6 +335,7 @@ def test_prompt_and_web_share_list_models_inventory():
     client = MagicMock()
     client.is_available.return_value = True
     client.list_models.side_effect = [
+        [],
         [],
         [{"name": DEFAULT_MODEL_NAME}],
     ]

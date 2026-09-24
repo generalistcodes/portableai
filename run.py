@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import os
 import signal
 import subprocess
 import sys
@@ -89,6 +90,12 @@ def main() -> None:
         default="127.0.0.1:11434",
         help="Host:port for bundled Ollama on Linux/macOS (default 127.0.0.1:11434).",
     )
+    parser.add_argument(
+        "--prefetch-only",
+        action="store_true",
+        help="Download the bundled Ollama engine and a starter model, then exit "
+        "(no UI, no browser). Also set by PORTABLEAI_PREFETCH_ONLY=1.",
+    )
     args = parser.parse_args()
 
     if sys.version_info < (3, 10):
@@ -118,7 +125,12 @@ def main() -> None:
 
     if not getattr(sys, "frozen", False):
         sys.path.insert(0, str(ROOT / "src"))
-    from first_run import maybe_prompt_default_model, wait_for_tcp_port  # noqa: E402
+    from first_run import (  # noqa: E402
+        maybe_prompt_default_model,
+        prefetch_requested,
+        run_prefetch,
+        wait_for_tcp_port,
+    )
     from ollama_runtime import (  # noqa: E402
         OllamaRuntimeError,
         external_ollama_url,
@@ -127,6 +139,11 @@ def main() -> None:
         supported_on_this_os,
     )
     from setup_progress import mark_error, mark_ready, set_phase  # noqa: E402
+
+    if prefetch_requested(args.prefetch_only, os.environ):
+        raise SystemExit(
+            run_prefetch(data_dir=server.DATA_DIR, host=args.ollama_host)
+        )
 
     port = server.pick_listen_port(args.port)
 

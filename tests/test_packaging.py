@@ -40,16 +40,21 @@ def test_install_sh_is_the_single_curl_pipe_path():
     assert "PortableAI-macos-arm64.dmg" in text
     assert "releases/latest/download" in text
     assert "chmod +x" in text
-    assert "does not start PortableAI" in text.lower() or "Does not start PortableAI" in text
+    assert "does not start portableai" in text.lower()
     assert "MINGW" in text and "arm64" in text
-    # Must not exec/launch the downloaded binary (chmod is the only +x).
+    assert "(app only, ~29 MB)" in text
+    assert "The first launch downloads the AI engine" in text
+    assert "PORTABLEAI_PREFETCH_ONLY=1" in text
+    assert "--prefetch-only" in text
+    assert "Everything is ready. Run" in text
+    # Must not exec/launch the downloaded binary on the default path
+    # (chmod is the only +x). --prefetch may invoke "$dest" after a flag check.
     for line in text.splitlines():
         stripped = line.split("#", 1)[0].strip()
         if not stripped:
             continue
-        assert "AppImage --" not in stripped
-        assert not stripped.startswith("./PortableAI.AppImage")
         assert not stripped.startswith("exec ")
+        assert not stripped.startswith("./PortableAI.AppImage")
 
 
 def test_spec_builds_on_every_os():

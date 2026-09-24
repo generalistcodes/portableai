@@ -9,21 +9,70 @@ agree afterward via GET /api/models.
 """
 from __future__ import annotations
 
+import json
+import os
 import socket
 import sys
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, TextIO
 
 DEFAULT_MODEL_NAME = "llama3.2:3b"
 DEFAULT_MODEL_SIZE = "~2 GB"
 DEFAULT_MODEL_BLURB = "good general-purpose default"
+PREFETCH_ONLY_ENV = "PORTABLEAI_PREFETCH_ONLY"
+DEFAULT_MODEL_ENV = "PORTABLEAI_DEFAULT_MODEL"
 
 PROMPT_HEADER = "No models installed yet."
 PROMPT_RECOMMEND = (
     f"Recommended: {DEFAULT_MODEL_NAME} ({DEFAULT_MODEL_SIZE}) -- {DEFAULT_MODEL_BLURB}"
 )
 PROMPT_QUESTION = "Download it now? [Y/n]: "
+
+
+def prefetch_requested(flag: bool = False, env=None) -> bool:
+    if flag:
+        return True
+    raw = ((env or os.environ).get(PREFETCH_ONLY_ENV) or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def catalog_path() -> Path:
+    try:
+        from app_paths import resource_root
+    except ImportError:
+        return Path(__file__).resolve().parent.parent / "ui" / "model_catalog.json"
+    return resource_root() / "ui" / "model_catalog.json"
+
+
+def load_catalog(path: Path | None = None) -> list[dict]:
+    target = path or catalog_path()
+    if not target.is_file():
+        return []
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def recommended_model_from_catalog(catalog: list[dict] | None = None) -> str | None:
+    """First catalog entry with recommended: true (llama3.2:3b in the shipped file)."""
+    for entry in catalog if catalog is not None else load_catalog():
+        if not isinstance(entry, dict) or not entry.get("recommended"):
+            continue
+        name = (entry.get("name") or "").strip()
+        if name:
+            return name
+    return None
+
+
+def default_model_name(*, env=None, catalog: list[dict] | None = None) -> str:
+    override = ((env or os.environ).get(DEFAULT_MODEL_ENV) or "").strip()
+    if override:
+        return override
+    return recommended_model_from_catalog(catalog) or DEFAULT_MODEL_NAME
 
 
 def interactive_terminal(
@@ -107,8 +156,13 @@ def maybe_prompt_default_model(
     if names:
         return "has_models"
 
+    model = default_model_name()
     print(PROMPT_HEADER, file=out_stream, flush=True)
-    print(PROMPT_RECOMMEND, file=out_stream, flush=True)
+    print(
+        f"Recommended: {model} ({DEFAULT_MODEL_SIZE}) -- {DEFAULT_MODEL_BLURB}",
+        file=out_stream,
+        flush=True,
+    )
     read_line = input_fn if input_fn is not None else input
     try:
         answer = read_line(PROMPT_QUESTION)
@@ -119,8 +173,24 @@ def maybe_prompt_default_model(
     if answer.strip().lower() in ("n", "no"):
         return "declined"
 
+    return ensure_default_model(client, model, stdout=out_stream)
+
+
+def ensure_default_model(
+    client: Any,
+    name: str | None = None,
+    *,
+    stdout: TextIO | None = None,
+) -> str:
+    """Pull the starter model via OllamaClient.pull_model if it is missing."""
+    out_stream = stdout if stdout is not None else sys.stdout
+    model = name or default_model_name()
+    names = _installed_names(client)
+    if names and _model_already_installed(model, names):
+        return "has_models"
+
     print(
-        f"Downloading {DEFAULT_MODEL_NAME} ({DEFAULT_MODEL_SIZE})...",
+        f"Downloading {model} ({DEFAULT_MODEL_SIZE})...",
         file=out_stream,
         flush=True,
     )
@@ -134,7 +204,7 @@ def maybe_prompt_default_model(
 
     try:
         client.pull_model(
-            DEFAULT_MODEL_NAME,
+            model,
             on_status=on_status,
             on_progress=on_progress,
         )
@@ -143,3 +213,60 @@ def maybe_prompt_default_model(
         return "error"
     print("Done.", file=out_stream, flush=True)
     return "pulled"
+
+
+def _model_already_installed(name: str, installed: list[str]) -> bool:
+    try:
+        from persona_cards import model_is_installed
+    except ImportError:
+        return name in installed
+    return model_is_installed(name, installed)
+
+
+def run_prefetch(
+    *,
+    data_dir: Path,
+    host: str = "127.0.0.1:11434",
+    stdout: TextIO | None = None,
+    start=None,
+    client_factory=None,
+) -> int:
+    """Vendored Ollama + starter model, then stop. No Flask, no browser.
+
+    Uses ``start_managed_ollama`` and ``OllamaClient.pull_model`` as-is.
+    """
+    from ollama_client import OllamaClient
+    from ollama_runtime import OllamaRuntimeError, start_managed_ollama
+
+    out = stdout if stdout is not None else sys.stdout
+    starter = start or start_managed_ollama
+    make_client = client_factory or (lambda url: OllamaClient(base_url=url))
+    handle = None
+    try:
+        mode, url, handle = starter(data_dir, host=host)
+    except OllamaRuntimeError as exc:
+        print(f"Failed to start bundled Ollama: {exc}", file=sys.stderr)
+        return 1
+    try:
+        if mode == "none" or not url:
+            print(
+                "Note: PortableAI does not bundle Ollama on this OS yet (Linux/macOS only). "
+                "Install Ollama separately: https://ollama.com/download",
+                file=out,
+            )
+            return 1
+        if mode == "external":
+            print(
+                f"PORTABLEAI_EXTERNAL_OLLAMA_URL is set — skipping bundled Ollama, using {url}",
+                file=out,
+            )
+        client = make_client(url)
+        model = default_model_name()
+        result = ensure_default_model(client, model, stdout=out)
+        if result == "error":
+            return 1
+        print("Prefetch complete.", file=out, flush=True)
+        return 0
+    finally:
+        if handle is not None:
+            handle.stop()

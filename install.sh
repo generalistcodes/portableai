@@ -3,11 +3,13 @@
 #
 # Read this file first (it is short on purpose), then:
 #   curl -fsSL https://raw.githubusercontent.com/generalistcodes/portableai/HEAD/install.sh | sh
-# or, from a clone:  sh install.sh
+#   curl -fsSL …/install.sh | sh -s -- --prefetch
+# or, from a clone:  sh install.sh [--prefetch]
 #
-# Downloads into the current working directory. Does not start PortableAI:
-# the app is a local network server, and an unattended pipe-to-sh launch
-# would be a surprise, not a convenience.
+# Downloads into the current working directory. Without --prefetch, does not start PortableAI:
+# the app is a local network server, and an unattended pipe-to-sh launch would be a surprise,
+# not a convenience. --prefetch (Linux AppImage only) then runs the app once with
+# PORTABLEAI_PREFETCH_ONLY=1 so the engine + starter model download now.
 
 set -eu
 
@@ -18,6 +20,23 @@ die() {
   printf '%s\n' "$@" >&2
   exit 1
 }
+
+prefetch=0
+for arg in "$@"; do
+  case "$arg" in
+    --prefetch)
+      prefetch=1
+      ;;
+    -h|--help)
+      echo "Usage: sh install.sh [--prefetch]"
+      echo "  --prefetch  also download the AI engine and a starter model (Linux AppImage)"
+      exit 0
+      ;;
+    *)
+      die "Unknown option: $arg"
+      ;;
+  esac
+done
 
 unsupported() {
   os="$1"
@@ -74,15 +93,36 @@ case "$dest" in
 esac
 
 echo
-echo "✓ Downloaded $dest"
-case "$dest" in
-  *.AppImage)
-    echo "Run it with: $dest"
-    echo "If FUSE is unavailable: $dest --appimage-extract-and-run"
-    ;;
-  *.dmg)
-    echo "Open the .dmg, then right-click the app and choose \"Open\""
-    echo "the first time — unsigned build for now."
-    ;;
-esac
-echo "(This script does not start PortableAI for you.)"
+if [ "$prefetch" -eq 1 ]; then
+  case "$dest" in
+    *.AppImage)
+      echo "Prefetching the AI engine and a starter model..."
+      if ! PORTABLEAI_PREFETCH_ONLY=1 "$dest" --prefetch-only; then
+        PORTABLEAI_PREFETCH_ONLY=1 "$dest" --appimage-extract-and-run --prefetch-only \
+          || die "Prefetch failed."
+      fi
+      echo
+      echo "✓ Everything is ready. Run $dest to start chatting"
+      echo "immediately -- no more downloads needed."
+      ;;
+    *)
+      die "--prefetch is only supported for the Linux AppImage."
+      ;;
+  esac
+else
+  echo "✓ Downloaded $dest (app only, ~29 MB)"
+  case "$dest" in
+    *.AppImage)
+      echo "Run it with: $dest"
+      echo "The first launch downloads the AI engine (~1.4 GB) and a starter"
+      echo "model -- this only happens once."
+      echo "If FUSE is unavailable: $dest --appimage-extract-and-run"
+      ;;
+    *.dmg)
+      echo "Open the .dmg, then right-click the app and choose \"Open\""
+      echo "the first time — unsigned build for now."
+      echo "The first launch downloads the AI engine (~1.4 GB) and a starter"
+      echo "model -- this only happens once."
+      ;;
+  esac
+fi
