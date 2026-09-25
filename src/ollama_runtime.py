@@ -23,6 +23,7 @@ import platform
 import shutil
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import tarfile
@@ -31,6 +32,8 @@ import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
+
+import certifi
 
 PINNED_VERSION = "v0.34.0"
 RELEASE_BASE = f"https://github.com/ollama/ollama/releases/download/{PINNED_VERSION}"
@@ -69,6 +72,17 @@ SYSTEM_OLLAMA_NOTICE = (
     "A system-wide `ollama` is on PATH, but PortableAI is using its own "
     "bundled copy in data/ollama-bin/ instead — isolated from the system install."
 )
+
+
+def ssl_context() -> ssl.SSLContext:
+    """TLS context that frozen PyInstaller apps can actually verify with.
+
+    A signed macOS .app does not inherit the system CA store, so urllib's
+    default context fails GitHub HTTPS with CERTIFICATE_VERIFY_FAILED /
+    unable to get local issuer certificate. certifi's cacert.pem is packed
+    into the bundle (portableai.spec) and used here as the explicit CA file.
+    """
+    return ssl.create_default_context(cafile=certifi.where())
 
 
 class OllamaRuntimeError(RuntimeError):
@@ -399,7 +413,7 @@ def wait_until_ready(base_url: str, proc: subprocess.Popen, timeout: float = REA
                 f"Check whether {base_url} is already in use, and see data/ollama-bin/ollama.log."
             )
         try:
-            with urllib.request.urlopen(url, timeout=1) as resp:
+            with urllib.request.urlopen(url, timeout=1, context=ssl_context()) as resp:
                 if getattr(resp, "status", 200) == 200:
                     return
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
@@ -570,7 +584,7 @@ def _fetch_once(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".partial")
     try:
-        with urllib.request.urlopen(url, timeout=120) as resp, open(tmp, "wb") as f:
+        with urllib.request.urlopen(url, timeout=120, context=ssl_context()) as resp, open(tmp, "wb") as f:
             total_header = resp.headers.get("Content-Length")
             total_n = int(total_header) if total_header and total_header.isdigit() else None
             if total_n:

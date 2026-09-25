@@ -63,6 +63,15 @@ def test_spec_builds_on_every_os():
     assert "persona_cards" in text
     assert 'name="portableai"' in text
     assert '"PIL"' in text
+    assert "import certifi" in text
+    assert "cacert.pem" in text
+    assert "CERTIFI_CACERT" in text
+    assert '"certifi"' in text
+
+
+def test_requirements_declare_certifi():
+    text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    assert "certifi" in text
 
 
 def test_appimage_desktop_entry_has_name_and_icon():

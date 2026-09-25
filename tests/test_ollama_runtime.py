@@ -15,6 +15,7 @@ from ollama_runtime import (  # noqa: E402
     PINNED_VERSION,
     OllamaHandle,
     OllamaRuntimeError,
+    _fetch_once,
     archive_name,
     clear_macos_quarantine,
     download_start_message,
@@ -22,6 +23,7 @@ from ollama_runtime import (  # noqa: E402
     ensure_and_start,
     ensure_binary,
     external_ollama_url,
+    ssl_context,
     start_managed_ollama,
     start_serve,
     supported_on_this_os,
@@ -464,6 +466,52 @@ def test_fetch_retries_urlerror_then_succeeds(tmp_path, capsys):
     assert "URLError" in log
     assert "progress" in log
     assert "download complete" in log
+    for call in mock_open.call_args_list:
+        assert call.kwargs.get("context") is not None
+
+
+def test_ssl_context_uses_certifi_cacert_pem():
+    import certifi
+    from unittest.mock import patch
+
+    captured = {}
+    real = ssl_context.__globals__["ssl"].create_default_context
+
+    def wrapped(*args, **kwargs):
+        captured["cafile"] = kwargs.get("cafile")
+        return real(*args, **kwargs)
+
+    with patch("ollama_runtime.ssl.create_default_context", side_effect=wrapped):
+        ctx = ssl_context()
+
+    pem = Path(captured["cafile"])
+    assert pem == Path(certifi.where())
+    assert pem.name == "cacert.pem"
+    assert pem.is_file()
+    assert "BEGIN CERTIFICATE" in pem.read_text(encoding="utf-8")[:2048]
+    assert ctx.cert_store_stats()["x509_ca"] > 0
+
+
+def test_fetch_once_passes_certifi_ssl_context(tmp_path):
+    from unittest.mock import MagicMock, patch
+
+    dest = tmp_path / "archive.zip"
+    body = b"ollama-bytes"
+    ok_resp = MagicMock()
+    ok_resp.headers = {"Content-Length": str(len(body))}
+    ok_resp.read.side_effect = [body, b""]
+    ok_resp.__enter__ = lambda self: self
+    ok_resp.__exit__ = lambda *args: False
+    sentinel = object()
+
+    with (
+        patch("ollama_runtime.ssl_context", return_value=sentinel),
+        patch("ollama_runtime.urllib.request.urlopen", return_value=ok_resp) as mock_open,
+    ):
+        _fetch_once("https://example.test/Ollama-darwin.zip", dest)
+
+    assert dest.read_bytes() == body
+    assert mock_open.call_args.kwargs["context"] is sentinel
 
 
 def test_ensure_and_start_falls_back_when_preferred_port_is_taken(tmp_path, monkeypatch, capsys):

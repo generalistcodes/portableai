@@ -3,13 +3,24 @@
 
 Linux is the complete packaged path (vendored Ollama + LAN IP detection).
 macOS has those runtime pieces; the .app/.dmg this spec feeds is unsigned.
-Windows still has no vendored-Ollama download and no LAN IP enumerator —
-the .exe is the Python UI plus a console, not a full installer.
+Windows vendors Ollama (zip) and enumerates LAN IPs via ipconfig; the .exe
+is unsigned and has no installer (see packaging/windows/INCOMPLETE.txt).
+
+Frozen HTTPS on macOS does not inherit the system CA store. certifi's
+cacert.pem is shipped as package data so urllib can verify GitHub TLS.
+hook-certifi from _pyinstaller_hooks_contrib also collects this file;
+the datas entry below is explicit so a missing hook cannot drop it.
 """
 import sys
 from pathlib import Path
 
+import certifi
+
 ROOT = Path(SPECPATH)
+# certifi.where() is .../certifi/cacert.pem at analysis time. Dest dir
+# "certifi" means the frozen path is _MEIPASS/certifi/cacert.pem, which
+# matches certifi.where() inside the bundle.
+CERTIFI_CACERT = Path(certifi.where())
 
 a = Analysis(
     ["run.py"],
@@ -19,6 +30,7 @@ a = Analysis(
         (str(ROOT / "ui" / "static"), "ui/static"),
         (str(ROOT / "personas"), "personas"),
         (str(ROOT / "ui" / "model_catalog.json"), "ui"),
+        (str(CERTIFI_CACERT), "certifi"),
     ],
     hiddenimports=[
         "server",
@@ -38,6 +50,7 @@ a = Analysis(
         "jinja2",
         "werkzeug",
         "requests",
+        "certifi",
         "qrcode",
         "qrcode.image.svg",
     ],
