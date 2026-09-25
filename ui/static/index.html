@@ -20,7 +20,7 @@
   })();
 </script>
 <link rel="icon" type="image/png" href="logo.png?v=badge-1">
-<link rel="stylesheet" href="style.css?v=first-run-1">
+<link rel="stylesheet" href="style.css?v=ollama-unavail-1">
 </head>
 <body>
 <div class="app">
@@ -107,6 +107,10 @@
       </select>
     </div>
     <div id="pairingConnectedBanner" class="pairing-connected-banner hidden" role="status" aria-live="polite"></div>
+    <div id="ollamaUnavailableBanner" class="ollama-unavailable-banner hidden" hidden role="status" aria-live="polite">
+      <p id="ollamaUnavailableReason"></p>
+      <a id="ollamaInstallLink" class="ollama-install-link hidden" hidden href="https://ollama.com/download" target="_blank" rel="noopener">Download Ollama</a>
+    </div>
 
     <div id="messages" class="messages">
       <div class="empty-state">
@@ -137,6 +141,7 @@
       <div id="setupProgressBar" class="setup-progress-bar"></div>
     </div>
     <p id="setupPercent" class="muted small"></p>
+    <p id="setupLogHint" class="muted small setup-log-hint">Having trouble? Check the detailed log at <span id="setupLogPath">data/setup.log</span></p>
   </div>
 </div>
 
@@ -535,6 +540,6 @@
   </div>
 </div>
 
-<script src="app.js?v=first-run-1"></script>
+<script src="app.js?v=ollama-unavail-1"></script>
 </body>
 </html>

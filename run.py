@@ -138,7 +138,14 @@ def main() -> None:
         start_managed_ollama,
         supported_on_this_os,
     )
-    from setup_progress import mark_error, mark_ready, set_phase  # noqa: E402
+    from setup_progress import (  # noqa: E402
+        bind_setup_log_from_data_dir,
+        mark_error,
+        mark_ready,
+        set_phase,
+    )
+
+    bind_setup_log_from_data_dir(server.DATA_DIR)
 
     if prefetch_requested(args.prefetch_only, os.environ):
         raise SystemExit(
@@ -223,6 +230,7 @@ def main() -> None:
                 "Note: PortableAI does not bundle Ollama on this OS yet (Linux/macOS only). "
                 "Install Ollama separately: https://ollama.com/download"
             )
+            server.set_managed_ollama_base_url(None, mode="none")
         mark_ready()
         maybe_prompt_default_model(server._client())
         ui_thread.join()

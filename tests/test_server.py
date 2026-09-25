@@ -225,6 +225,18 @@ def test_persona_list_ui_hides_model_and_renders_icons(client):
     assert 'id="onboardOverlay"' in html
     assert "No models installed yet" in html
     assert "Setting up PortableAI for the first time" in html
+    assert "Having trouble? Check the detailed log at" in html
+    assert 'id="setupLogPath"' in html
+    assert "Download appears stalled -- check your connection" in js
+    assert "status.stalled" in js
+    assert "status.setup_log" in js
+    assert 'id="ollamaUnavailableBanner"' in html
+    assert "applyOllamaUnavailableBanner" in js
+    assert 'ollama_mode === "unavailable"' in js
+    assert "showDownloadFailure" in js
+    assert "Download failed:" not in js
+    assert "ollama.com/download" in html
+    assert ".ollama-unavailable-banner" in css
 
 
 def test_settings_roundtrip(client):
@@ -258,6 +270,9 @@ def test_api_status_reports_unavailable(mock_cls, client):
     assert resp.status_code == 200
     assert data["ollama_available"] is False
     assert data["base_url"] == "http://localhost:11434"
+    assert data["ollama_mode"] == "unavailable"
+    assert data["ollama_reason"] == "Cannot reach Ollama -- is it running?"
+    assert "ollama_install_url" not in data
 
 
 def test_api_setup_status_ready_by_default(client, app):
@@ -268,6 +283,9 @@ def test_api_setup_status_ready_by_default(client, app):
     assert data["phase"] == "ready"
     assert data["busy"] is False
     assert data["percent"] is None
+    assert data["stalled"] is False
+    assert data["setup_log"] == str((app.DATA_DIR / "setup.log").resolve())
+    assert data["setup_log"].endswith("setup.log")
 
 
 def test_api_setup_status_reports_download_progress(client, app):
@@ -278,6 +296,8 @@ def test_api_setup_status_reports_download_progress(client, app):
         assert data["phase"] == "downloading_ollama"
         assert data["percent"] == 25
         assert data["bytes_downloaded"] == 25 * 1024 * 1024
+        assert data["stalled"] is False
+        assert data["setup_log"] == str((app.DATA_DIR / "setup.log").resolve())
     finally:
         app.setup_progress.reset()
 
@@ -338,6 +358,41 @@ def test_api_status_reports_external_override(mock_cls, client, app):
     assert data["ollama_mode_label"] == (
         "Ollama: external override (http://127.0.0.1:11434)"
     )
+    assert data["ollama_reason"] == ""
+
+
+@patch("server.OllamaClient")
+def test_api_status_unavailable_windows_not_bundled(mock_cls, client, app):
+    mock_cls.return_value.is_available.return_value = False
+    mock_cls.return_value.base_url = "http://127.0.0.1:11434"
+    app.set_managed_ollama_base_url(None, mode="none")
+    data = client.get("/api/status").get_json()
+    assert data["ollama_mode"] == "unavailable"
+    assert data["ollama_available"] is False
+    assert "doesn't bundle Ollama on Windows yet" in data["ollama_reason"]
+    assert data["ollama_install_url"] == "https://ollama.com/download"
+    pull = client.post(
+        "/api/models/pull",
+        data=json.dumps({"name": "llama3.2:3b"}),
+        content_type="application/json",
+    )
+    assert pull.status_code == 503
+    assert pull.get_json()["error"] == data["ollama_reason"]
+
+
+@patch("server.OllamaClient")
+def test_api_status_unavailable_then_available_clears_reason(mock_cls, client, app):
+    mock_cls.return_value.base_url = "http://127.0.0.1:11435"
+    mock_cls.return_value.is_available.return_value = False
+    app.set_managed_ollama_base_url("http://127.0.0.1:11435", mode="bundled")
+    down = client.get("/api/status").get_json()
+    assert down["ollama_mode"] == "unavailable"
+    assert down["ollama_reason"] == "Cannot reach Ollama -- is it running?"
+    mock_cls.return_value.is_available.return_value = True
+    up = client.get("/api/status").get_json()
+    assert up["ollama_mode"] == "bundled"
+    assert up["ollama_reason"] == ""
+    assert up["ollama_available"] is True
 
 
 def test_settings_ui_shows_ollama_mode_label():
@@ -1679,12 +1734,16 @@ def test_pull_model_requires_name(mock_cls, client):
 @patch("server.OllamaClient")
 def test_pull_model_503_when_ollama_down(mock_cls, client):
     mock_cls.return_value.is_available.return_value = False
+    mock_cls.return_value.base_url = "http://localhost:11434"
     resp = client.post(
         "/api/models/pull",
         data=json.dumps({"name": "qwen2.5:0.5b"}),
         content_type="application/json",
     )
     assert resp.status_code == 503
+    assert resp.get_json()["error"] == "Cannot reach Ollama -- is it running?"
+    status = client.get("/api/status").get_json()
+    assert status["ollama_reason"] == resp.get_json()["error"]
 
 
 def _ndjson_events(resp):

@@ -184,11 +184,32 @@ async function refreshStatus() {
     if (modeEl && data.ollama_mode_label) {
       modeEl.textContent = data.ollama_mode_label;
     }
+    applyOllamaUnavailableBanner(data);
   } catch (err) {
     pill.className = "status-pill status-down";
     text.textContent = err.pairingRequired ? "Pairing required" : "Status check failed";
   }
   refreshDeviceCount();
+}
+
+function applyOllamaUnavailableBanner(data) {
+  const banner = el("ollamaUnavailableBanner");
+  if (!banner) return;
+  const unavailable = Boolean(data && data.ollama_mode === "unavailable");
+  banner.classList.toggle("hidden", !unavailable);
+  banner.hidden = !unavailable;
+  if (!unavailable) return;
+  const reasonEl = el("ollamaUnavailableReason");
+  if (reasonEl) {
+    reasonEl.textContent = data.ollama_reason || "Cannot reach Ollama -- is it running?";
+  }
+  const link = el("ollamaInstallLink");
+  if (link) {
+    const url = data.ollama_install_url || "";
+    link.classList.toggle("hidden", !url);
+    link.hidden = !url;
+    if (url) link.href = url;
+  }
 }
 
 function updateDeviceCountLabel(n) {
@@ -286,6 +307,9 @@ async function downloadModel(name, buttonEl) {
   if (buttonEl) {
     buttonEl.disabled = true;
     buttonEl.textContent = "Downloading…";
+    const old = buttonEl.closest(".model-row, .onboard-option");
+    const prev = old && old.querySelector(".download-failure");
+    if (prev) prev.remove();
   }
   try {
     const headers = { "Content-Type": "application/json" };
@@ -335,12 +359,27 @@ async function downloadModel(name, buttonEl) {
     await loadPersonas();
     return true;
   } catch (err) {
-    if (buttonEl) {
-      buttonEl.disabled = false;
-      buttonEl.textContent = "Download";
-    }
-    alert(`Download failed: ${err.message}`);
+    showDownloadFailure(err.message, buttonEl);
+    refreshStatus();
     return false;
+  }
+}
+
+function showDownloadFailure(message, buttonEl) {
+  const text = (message || "").trim() || "Download failed";
+  if (buttonEl) {
+    buttonEl.disabled = false;
+    buttonEl.textContent = "Download";
+    const host = buttonEl.closest(".model-row, .onboard-option") || buttonEl.parentElement;
+    if (host) {
+      let note = host.querySelector(".download-failure");
+      if (!note) {
+        note = document.createElement("p");
+        note.className = "download-failure";
+        host.appendChild(note);
+      }
+      note.textContent = text;
+    }
   }
 }
 
@@ -476,13 +515,21 @@ function applySetupStatus(status) {
     extracting: "Extracting Ollama",
     starting_ollama: "Starting Ollama",
   };
+  const stalled = Boolean(status.stalled);
+  if (overlay) overlay.classList.toggle("is-stalled", stalled);
   const text = el("setupStatusText");
-  if (text) text.textContent = status.message || labels[phase] || "Setting up…";
+  if (text) {
+    text.textContent = stalled
+      ? (status.message || "Download appears stalled -- check your connection")
+      : (status.message || labels[phase] || "Setting up…");
+  }
   const bar = el("setupProgressBar");
   const pctLabel = el("setupPercent");
   const pct = typeof status.percent === "number" ? status.percent : null;
   if (bar) bar.style.width = pct == null ? "12%" : `${Math.max(0, Math.min(100, pct))}%`;
   if (pctLabel) pctLabel.textContent = pct == null ? "" : `${pct}%`;
+  const pathNode = el("setupLogPath");
+  if (pathNode && status.setup_log) pathNode.textContent = status.setup_log;
 }
 
 async function waitForSetupReady() {

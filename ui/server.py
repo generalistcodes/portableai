@@ -114,18 +114,27 @@ _built_personas: set[str] = set()
 
 # Set by run.py when it launches the bundled Linux Ollama subprocess, so
 # this process talks to that instance without rewriting settings.json.
-# mode is "bundled" or "external" when a managed URL is set.
+# mode is "bundled", "external", or "none" (this OS has no vendor path).
 _managed_ollama_base_url: str | None = None
 _managed_ollama_mode: str | None = None
+
+OLLAMA_REASON_UNREACHABLE = "Cannot reach Ollama -- is it running?"
+OLLAMA_REASON_NOT_BUNDLED = (
+    "PortableAI doesn't bundle Ollama on Windows yet -- "
+    "install it separately from https://ollama.com/download"
+)
+OLLAMA_INSTALL_URL = "https://ollama.com/download"
 
 
 def set_managed_ollama_base_url(url: str | None, *, mode: str | None = None) -> None:
     global _managed_ollama_base_url, _managed_ollama_mode
     _managed_ollama_base_url = url.rstrip("/") if url else None
-    if not _managed_ollama_base_url:
-        _managed_ollama_mode = None
-    else:
+    if _managed_ollama_base_url:
         _managed_ollama_mode = mode or "bundled"
+    elif mode == "none":
+        _managed_ollama_mode = "none"
+    else:
+        _managed_ollama_mode = None
 
 
 def _ollama_url_port(base_url: str) -> int | None:
@@ -142,12 +151,46 @@ def _ollama_url_port(base_url: str) -> int | None:
     return None
 
 
-def _ollama_mode_fields(base_url: str) -> dict:
-    """Read-only Settings label: bundled vs explicit external override."""
+def _ollama_unsupported_os() -> bool:
+    if _managed_ollama_mode == "none":
+        return True
+    try:
+        from ollama_runtime import supported_on_this_os
+    except ImportError:
+        return False
+    return not supported_on_this_os()
+
+
+def ollama_unavailable_reason() -> str:
+    """Same sentence for GET /api/status and 503s when Ollama is down."""
+    if _ollama_unsupported_os():
+        return OLLAMA_REASON_NOT_BUNDLED
+    return OLLAMA_REASON_UNREACHABLE
+
+
+def _ollama_unreachable_response():
+    return jsonify({"error": ollama_unavailable_reason()}), 503
+
+
+def _ollama_mode_fields(base_url: str, *, available: bool) -> dict:
+    """Read-only Settings label plus reachability: bundled / external / unavailable."""
+    if not available:
+        unsupported = _ollama_unsupported_os()
+        fields = {
+            "ollama_mode": "unavailable",
+            "ollama_mode_label": "Ollama: unavailable",
+            "ollama_reason": (
+                OLLAMA_REASON_NOT_BUNDLED if unsupported else OLLAMA_REASON_UNREACHABLE
+            ),
+        }
+        if unsupported:
+            fields["ollama_install_url"] = OLLAMA_INSTALL_URL
+        return fields
     if _managed_ollama_mode == "external":
         return {
             "ollama_mode": "external",
             "ollama_mode_label": f"Ollama: external override ({base_url})",
+            "ollama_reason": "",
         }
     if _managed_ollama_mode == "bundled":
         port = _ollama_url_port(base_url)
@@ -155,10 +198,12 @@ def _ollama_mode_fields(base_url: str) -> dict:
         return {
             "ollama_mode": "bundled",
             "ollama_mode_label": f"Ollama: bundled (port {port_s})",
+            "ollama_reason": "",
         }
     return {
         "ollama_mode": "default",
         "ollama_mode_label": f"Ollama: not bundled ({base_url})",
+        "ollama_reason": "",
     }
 
 
@@ -683,7 +728,7 @@ def _installed_model_names() -> tuple[list[str] | None, tuple | None]:
     """Return (names, error_response). error_response is (jsonify, status) on failure."""
     client = _client()
     if not client.is_available():
-        return None, (jsonify({"error": "Ollama is not reachable. Cannot validate base_model."}), 503)
+        return None, _ollama_unreachable_response()
     try:
         raw = client.list_models()
     except _OLLAMA_CALL_ERRORS as e:
@@ -1039,14 +1084,16 @@ def api_status():
     client = _client()
     available = client.is_available()
     payload = {"ollama_available": available, "base_url": client.base_url}
-    payload.update(_ollama_mode_fields(client.base_url))
+    payload.update(_ollama_mode_fields(client.base_url, available=available))
     return jsonify(payload)
 
 
 @app.route("/api/setup-status")
 def api_setup_status():
     """First-run vendor progress. Same snapshot the setup overlay polls."""
-    return jsonify(setup_progress.snapshot())
+    payload = setup_progress.snapshot()
+    payload["setup_log"] = str((DATA_DIR / "setup.log").resolve())
+    return jsonify(payload)
 
 
 def _load_catalog() -> list[dict]:
@@ -1089,7 +1136,7 @@ def api_models_pull():
 
     client = _client()
     if not client.is_available():
-        return jsonify({"error": "Ollama is not reachable. Run `ollama serve`."}), 503
+        return _ollama_unreachable_response()
 
     def generate():
         try:
@@ -1119,7 +1166,7 @@ def api_models_check_update():
 
     client = _client()
     if not client.is_available():
-        return jsonify({"error": "Ollama is not reachable. Run `ollama serve`."}), 503
+        return _ollama_unreachable_response()
 
     try:
         before = {m.get("name"): m.get("digest") for m in client.list_models()}
@@ -1451,7 +1498,7 @@ def api_chat():
 
     client = _client()
     if not client.is_available():
-        return jsonify({"error": "Ollama is not reachable. Run `ollama serve`."}), 503
+        return _ollama_unreachable_response()
 
     try:
         actual_model = _ensure_persona_built(client, persona_name, model_override)

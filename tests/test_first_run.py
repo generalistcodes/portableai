@@ -32,6 +32,7 @@ from setup_progress import (  # noqa: E402
     mark_ready,
     reset,
     set_phase,
+    set_setup_log_path,
     snapshot,
     update_download,
 )
@@ -40,8 +41,10 @@ from setup_progress import (  # noqa: E402
 @pytest.fixture(autouse=True)
 def _reset_setup_progress():
     reset()
+    set_setup_log_path(None)
     yield
     reset()
+    set_setup_log_path(None)
 
 
 class _FakeStd:
@@ -214,15 +217,65 @@ def test_wait_for_tcp_port_times_out_on_closed_port():
 def test_setup_progress_snapshot_marks_busy_during_download():
     assert snapshot()["busy"] is False
     assert snapshot()["phase"] == "ready"
+    assert snapshot()["stalled"] is False
     update_download(50, 100)
     snap = snapshot()
     assert snap["busy"] is True
     assert snap["phase"] == "downloading_ollama"
     assert snap["percent"] == 50
+    assert snap["stalled"] is False
+    assert snap["setup_log"].endswith("setup.log")
     set_phase("extracting", message="Extracting Ollama")
     assert snapshot()["busy"] is True
+    assert snapshot()["stalled"] is False
     mark_ready()
     assert snapshot()["busy"] is False
+
+
+def test_setup_log_path_matches_data_dir(tmp_path):
+    from setup_progress import bind_setup_log_from_data_dir, setup_log_path
+
+    bind_setup_log_from_data_dir(tmp_path)
+    assert setup_log_path() == tmp_path / "setup.log"
+    assert snapshot()["setup_log"] == str((tmp_path / "setup.log").resolve())
+
+
+def test_snapshot_marks_stalled_after_sixty_seconds_without_bytes(monkeypatch, tmp_path):
+    from setup_progress import STALL_SECONDS, bind_setup_log_from_data_dir
+
+    bind_setup_log_from_data_dir(tmp_path)
+    clock = {"now": 1000.0}
+    monkeypatch.setattr("setup_progress.time.monotonic", lambda: clock["now"])
+    update_download(10 * 1024 * 1024, 100 * 1024 * 1024)
+    assert snapshot()["stalled"] is False
+    clock["now"] += STALL_SECONDS - 1
+    assert snapshot()["stalled"] is False
+    clock["now"] += 1
+    snap = snapshot()
+    assert snap["stalled"] is True
+    assert snap["busy"] is True
+    assert snap["message"] == "Download appears stalled -- check your connection"
+    log = (tmp_path / "setup.log").read_text(encoding="utf-8")
+    assert "stalled  no new bytes" in log
+    assert "downloaded=" in log
+    clock["now"] += 1
+    update_download(20 * 1024 * 1024, 100 * 1024 * 1024)
+    assert snapshot()["stalled"] is False
+    assert snapshot()["message"] == "Downloading Ollama"
+
+
+def test_stalled_after_real_pause_with_short_threshold(monkeypatch, tmp_path):
+    """Live clock: freeze bytes, wait past the threshold, overlay must flip."""
+    import setup_progress as sp
+
+    sp.bind_setup_log_from_data_dir(tmp_path)
+    monkeypatch.setattr(sp, "STALL_SECONDS", 0.4)
+    update_download(1024, 10 * 1024 * 1024)
+    assert snapshot()["stalled"] is False
+    time.sleep(0.55)
+    snap = snapshot()
+    assert snap["stalled"] is True
+    assert "stalled" in snap["message"].lower()
 
 
 def test_run_py_starts_ui_before_ollama_and_gates_tty_prompt():
@@ -231,6 +284,7 @@ def test_run_py_starts_ui_before_ollama_and_gates_tty_prompt():
     assert "webbrowser.open" in text
     assert text.index("ui_thread.start()") < text.index("start_managed_ollama(")
     assert "maybe_prompt_default_model" in text
+    assert 'mode="none"' in text
     assert "interactive_terminal" in (ROOT / "src" / "first_run.py").read_text(encoding="utf-8")
     assert "sys.stdin.isatty" in (ROOT / "src" / "first_run.py").read_text(
         encoding="utf-8"

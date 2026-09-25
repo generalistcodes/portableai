@@ -328,6 +328,11 @@ def test_fetch_retries_urlerror_then_succeeds(tmp_path, capsys):
     assert mock_open.call_count == 2
     mock_sleep.assert_called_once_with(2)
     assert "Connection issue, retrying (2/3)..." in capsys.readouterr().out
+    log = (tmp_path / "setup.log").read_text(encoding="utf-8")
+    assert "retry  attempt 2/3" in log
+    assert "URLError" in log
+    assert "progress" in log
+    assert "download complete" in log
 
 
 def test_ensure_and_start_falls_back_when_preferred_port_is_taken(tmp_path, monkeypatch, capsys):
@@ -407,3 +412,57 @@ def test_start_managed_ollama_vendors_when_override_unset(tmp_path, monkeypatch)
     assert mode == "bundled"
     assert url == "http://127.0.0.1:11436"
     assert handle is fake
+
+
+def test_fetch_writes_timestamped_progress_to_setup_log(tmp_path):
+    """Real HTTP download: setup.log must gain timestamped speed ticks as bytes arrive."""
+    import http.server
+    import re
+    import threading
+    import time
+
+    from setup_progress import reset, set_setup_log_path
+
+    from ollama_runtime import _fetch
+
+    reset()
+    payload = os.urandom(3 * 1024 * 1024)
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            step = 1024 * 1024
+            for offset in range(0, len(payload), step):
+                self.wfile.write(payload[offset : offset + step])
+                self.wfile.flush()
+                time.sleep(0.05)
+
+        def log_message(self, *_args):
+            return
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    dest = tmp_path / "ollama-bin" / "archive.bin"
+    dest.parent.mkdir()
+    try:
+        _fetch(f"http://127.0.0.1:{server.server_address[1]}/archive.bin", dest)
+    finally:
+        server.shutdown()
+    assert dest.read_bytes() == payload
+    log_path = tmp_path / "setup.log"
+    text = log_path.read_text(encoding="utf-8")
+    lines = [line for line in text.splitlines() if line.strip()]
+    assert lines, "setup.log stayed empty"
+    stamp = re.compile(
+        r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC  "
+    )
+    assert all(stamp.match(line) for line in lines)
+    progress_lines = [line for line in lines if "  progress  " in line]
+    assert len(progress_lines) >= 2
+    assert any("speed=" in line and "MB/s" in line for line in progress_lines)
+    assert any("elapsed=" in line for line in progress_lines)
+    assert "download complete" in text
+    set_setup_log_path(None)

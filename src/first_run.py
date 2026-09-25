@@ -195,12 +195,18 @@ def ensure_default_model(
         flush=True,
     )
     progress_state = {"last": -5}
+    _setup_log(f"model pull start  name={model}")
 
     def on_progress(completed: int, total: int) -> None:
         _print_pull_progress(completed, total, out_stream, progress_state)
+        _report_model_progress(completed, total)
 
-    def on_status(message: str, **_kwargs: Any) -> None:
+    def on_status(message: str, **kwargs: Any) -> None:
         print(f"  {message}", file=out_stream, flush=True)
+        if kwargs.get("status") == "retrying" or "retrying" in (message or "").lower():
+            _setup_log(f"model pull retry  {message}")
+        else:
+            _setup_log(f"model pull  {message}")
 
     try:
         client.pull_model(
@@ -210,9 +216,65 @@ def ensure_default_model(
         )
     except Exception as exc:
         print(f"Download failed: {exc}", file=out_stream, flush=True)
+        _setup_log(f"model pull failed  name={model}  error={exc}")
         return "error"
     print("Done.", file=out_stream, flush=True)
+    _setup_log(f"model pull complete  name={model}")
     return "pulled"
+
+
+def _setup_log(text: str) -> None:
+    try:
+        from setup_progress import write_setup_log
+    except ImportError:
+        return
+    write_setup_log(text)
+
+
+def _report_model_progress(completed: int, total: int) -> None:
+    """Reuse engine-download log ticks (5% / 5s) without flipping the setup overlay."""
+    try:
+        from setup_progress import LOG_INTERVAL_SECONDS, LOG_PERCENT_STEP, write_setup_log
+    except ImportError:
+        return
+    state = _report_model_progress.state  # type: ignore[attr-defined]
+    now = time.monotonic()
+    pct = min(100, int(100 * completed / total)) if total else None
+    last_at = state.get("last_at")
+    last_pct = state.get("last_pct", -LOG_PERCENT_STEP)
+    last_bytes = int(state.get("last_bytes") or 0)
+    started = state.get("started") or now
+    state["started"] = started
+    should = last_at is None
+    if pct is not None and pct >= last_pct + LOG_PERCENT_STEP:
+        should = True
+    if pct is not None and pct >= 100:
+        should = True
+    if last_at is not None and (now - last_at) >= LOG_INTERVAL_SECONDS:
+        should = True
+    if not should:
+        return
+    dt = (now - last_at) if last_at is not None else (now - started)
+    delta = max(0, completed - last_bytes)
+    speed = (delta / dt / (1024 * 1024)) if dt > 0 else 0.0
+    elapsed = max(0.0, now - started)
+    if total:
+        line = (
+            f"model progress  {completed / (1024 * 1024):.1f} / {total / (1024 * 1024):.1f} MB "
+            f"({pct}%)  elapsed={elapsed:.1f}s  speed={speed:.2f} MB/s"
+        )
+    else:
+        line = (
+            f"model progress  {completed / (1024 * 1024):.1f} MB  "
+            f"elapsed={elapsed:.1f}s  speed={speed:.2f} MB/s"
+        )
+    write_setup_log(line)
+    state["last_at"] = now
+    state["last_pct"] = pct if pct is not None else last_pct
+    state["last_bytes"] = completed
+
+
+_report_model_progress.state = {"last_at": None, "last_pct": -5, "last_bytes": 0, "started": None}
 
 
 def _model_already_installed(name: str, installed: list[str]) -> bool:
@@ -237,6 +299,13 @@ def run_prefetch(
     """
     from ollama_client import OllamaClient
     from ollama_runtime import OllamaRuntimeError, start_managed_ollama
+
+    try:
+        from setup_progress import bind_setup_log_from_data_dir
+
+        bind_setup_log_from_data_dir(data_dir)
+    except ImportError:
+        pass
 
     out = stdout if stdout is not None else sys.stdout
     starter = start or start_managed_ollama

@@ -208,6 +208,7 @@ def ensure_binary(
     """Return data/ollama-bin/ollama, downloading the pinned release if needed."""
     dest = bin_dir(data_dir)
     dest.mkdir(parents=True, exist_ok=True)
+    _bind_setup_log(Path(data_dir))
     if is_pinned_install(data_dir):
         return binary_path(data_dir)
 
@@ -215,11 +216,18 @@ def ensure_binary(
     url = download_url(machine, plat)
     archive = dest / archive_name(machine, plat)
     print(download_start_message(archive.name), flush=True)
+    _setup_log(f"engine download start  {download_start_message(archive.name)}")
+    _setup_log(f"engine download url  {url}")
     _report_phase("downloading_ollama", message="Downloading Ollama")
     try:
         (fetch or _fetch)(url, archive)
         _report_phase("extracting", message="Extracting Ollama")
+        _setup_log(f"extract start  archive={archive.name}")
         (extract or _extract_archive)(archive, dest)
+        _setup_log("extract complete")
+    except Exception as exc:
+        _setup_log(f"engine setup failed  error={exc}")
+        raise
     finally:
         archive.unlink(missing_ok=True)
 
@@ -437,6 +445,7 @@ def ensure_and_start(
 
 def _fetch(url: str, dest: Path) -> None:
     """Download ``url`` to ``dest``, retrying transient connection failures."""
+    _bind_setup_log_from_dest(dest)
     last_error: BaseException | None = None
     for attempt in range(1, FETCH_MAX_ATTEMPTS + 1):
         try:
@@ -445,11 +454,16 @@ def _fetch(url: str, dest: Path) -> None:
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             last_error = exc
             if attempt >= FETCH_MAX_ATTEMPTS:
+                _setup_log(
+                    f"download failed after {FETCH_MAX_ATTEMPTS} attempts  "
+                    f"error={type(exc).__name__}: {exc}"
+                )
                 break
             print(
                 f"Connection issue, retrying ({attempt + 1}/{FETCH_MAX_ATTEMPTS})...",
                 flush=True,
             )
+            _note_retry(attempt + 1, FETCH_MAX_ATTEMPTS, exc)
             time.sleep(FETCH_BACKOFF_SECONDS[attempt - 1])
     assert last_error is not None
     raise last_error
@@ -461,6 +475,42 @@ def _report_phase(phase: str, *, message: str = "") -> None:
     except ImportError:
         return
     set_phase(phase, message=message)
+
+
+def _bind_setup_log(data_dir: Path) -> None:
+    try:
+        from setup_progress import bind_setup_log_from_data_dir
+    except ImportError:
+        return
+    bind_setup_log_from_data_dir(data_dir)
+
+
+def _bind_setup_log_from_dest(dest: Path) -> None:
+    try:
+        from setup_progress import bind_setup_log_from_dest
+    except ImportError:
+        return
+    bind_setup_log_from_dest(dest)
+
+
+def _setup_log(text: str) -> None:
+    try:
+        from setup_progress import write_setup_log
+    except ImportError:
+        return
+    write_setup_log(text)
+
+
+def _note_retry(attempt: int, max_attempts: int, error: BaseException) -> None:
+    try:
+        from setup_progress import note_retry
+    except ImportError:
+        _setup_log(
+            f"retry  attempt {attempt}/{max_attempts}  "
+            f"error={type(error).__name__}: {error}"
+        )
+        return
+    note_retry(attempt, max_attempts, error)
 
 
 def _report_download(bytes_downloaded: int, bytes_total: int | None) -> None:
@@ -480,6 +530,7 @@ def _fetch_once(url: str, dest: Path) -> None:
             total_n = int(total_header) if total_header and total_header.isdigit() else None
             if total_n:
                 print(f"  {total_n / (1024 * 1024):.0f} MB from {url}", flush=True)
+                _setup_log(f"download size  {total_n / (1024 * 1024):.1f} MB from {url}")
             read = 0
             last_print = 0
             _report_download(0, total_n)
@@ -498,6 +549,9 @@ def _fetch_once(url: str, dest: Path) -> None:
                         flush=True,
                     )
         tmp.replace(dest)
+        _setup_log(
+            f"download complete  {read / (1024 * 1024):.1f} MB -> {dest}"
+        )
     except Exception:
         tmp.unlink(missing_ok=True)
         raise

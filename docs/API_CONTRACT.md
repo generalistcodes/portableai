@@ -202,7 +202,8 @@ Setting `verified: true` without both `verified_by` and
   "ollama_available": true,
   "base_url": "http://127.0.0.1:11434",
   "ollama_mode": "bundled",
-  "ollama_mode_label": "Ollama: bundled (port 11434)"
+  "ollama_mode_label": "Ollama: bundled (port 11434)",
+  "ollama_reason": ""
 }
 ```
 
@@ -213,8 +214,14 @@ Ollama if `run.py` set it, else `settings.json` `base_url`).
 `run.py` launched PortableAI's own Ollama; `external` means
 `PORTABLEAI_EXTERNAL_OLLAMA_URL` was set at launch (skip vendoring).
 `default` means no managed URL was set (for example tests that import
-the server module without `run.py`). The Settings UI shows
-`ollama_mode_label` as-is.
+the server module without `run.py`). `unavailable` means Ollama is not
+reachable right now — either this OS has no bundled binary yet
+(Windows today) or a configured instance refused the connection.
+`ollama_reason` is the human-readable sentence the UI banner and
+model-pull 503 share; empty when Ollama is up. On the unsupported-OS
+case the payload also includes
+`"ollama_install_url": "https://ollama.com/download"`. The Settings UI
+shows `ollama_mode_label` as-is.
 
 ### `GET /api/theme`
 
@@ -245,13 +252,18 @@ while the bundled Ollama archive is downloaded. `busy` is true only for
   "bytes_downloaded": null,
   "bytes_total": null,
   "message": "",
-  "busy": false
+  "busy": false,
+  "stalled": false,
+  "setup_log": "/absolute/path/to/data/setup.log"
 }
 ```
 
 `phase` is one of `ready`, `downloading_ollama`, `extracting`,
 `starting_ollama`, `error`. `percent` is `0`–`100` during the download,
-else JSON `null`.
+else JSON `null`. `setup_log` is the OS-specific path of the persistent
+engine/model download log (`<data_dir>/setup.log`). `stalled` is true
+when `downloading_ollama` has received no new bytes for 60 seconds;
+`message` is then `"Download appears stalled -- check your connection"`.
 
 ### `POST /api/theme`
 
@@ -462,8 +474,10 @@ invalid catalog file → `[]`.
 **Request:** `{"name": "llama3.2:3b"}` — `name` required after strip,
 else **400** `{"error": "name is required"}`.
 
-**503** `{"error": "Ollama is not reachable. Run \`ollama serve\`."}`
-(plain JSON; pull does not start)
+**503** `{"error": "<ollama_reason>"}` — same sentence as
+`GET /api/status` `ollama_reason` when Ollama is down (Windows: not
+bundled yet; otherwise `"Cannot reach Ollama -- is it running?"`).
+Plain JSON; pull does not start.
 
 Once the pull starts, **200** with `Content-Type: application/x-ndjson`:
 newline-delimited JSON events. Transient connection failures are retried
@@ -795,7 +809,8 @@ id, or the `--` variant). `latency_ms` is an integer millisecond count.
 **404** `{"error": "conversation not found"}` if `conversation_id` is
 unknown or not owned by the caller.
 
-**503** `{"error": "Ollama is not reachable. Run \`ollama serve\`."}`
+**503** `{"error": "<ollama_reason>"}` — same sentence as
+`GET /api/status` when Ollama is down.
 
 **500** `{"error": "could not build persona '<id>': …"}` if the
 Modelfile is missing or `create` fails with `OllamaError`.

@@ -680,6 +680,52 @@ html, body {
   animation: pairing-success-out 0.35s ease-in forwards;
 }
 
+.ollama-unavailable-banner {
+  margin: 8px 16px 0;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--danger-soft);
+  border: 1px solid var(--danger);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+  z-index: 6;
+}
+
+.ollama-unavailable-banner.hidden,
+.ollama-unavailable-banner[hidden] {
+  display: none;
+}
+
+.ollama-unavailable-banner p {
+  margin: 0;
+}
+
+.ollama-install-link {
+  display: inline-block;
+  margin-top: 6px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.ollama-install-link.hidden,
+.ollama-install-link[hidden] {
+  display: none;
+}
+
+.model-row,
+.onboard-option {
+  flex-wrap: wrap;
+}
+
+.download-failure {
+  flex: 1 0 100%;
+  margin: 6px 0 0;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .device-count-pill.just-connected {
   box-shadow: 0 0 0 2px var(--accent);
 }
@@ -1676,6 +1722,22 @@ html.awaiting-first-run .app {
   border-radius: 999px;
   background: var(--accent);
   transition: width 0.3s ease;
+}
+
+.setup-log-hint {
+  margin-top: 4px;
+  max-width: 100%;
+  line-height: 1.4;
+  word-break: break-all;
+  opacity: 0.85;
+}
+
+.first-run-overlay.is-stalled #setupStatusText {
+  color: var(--warning);
+}
+
+.first-run-overlay.is-stalled .setup-progress-bar {
+  background: var(--warning);
 }
 
 .onboard-card {
