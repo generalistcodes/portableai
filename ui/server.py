@@ -86,7 +86,7 @@ DEFAULT_THEME = "dark"
 # Bump these when you change this repo / the curated catalog, and reflect
 # the same values in whatever JSON you publish at your update_check_url.
 APP_NAME = "PortableAI"
-APP_VERSION = "0.7.2"
+APP_VERSION = "0.7.3"
 CATALOG_VERSION = "2026-09-06"
 
 PORT = 5050
