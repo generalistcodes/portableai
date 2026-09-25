@@ -79,7 +79,7 @@ jobs:
         shell: bash
         run: |
           cat packaging/windows/INCOMPLETE.txt
-          echo "::warning::Windows package is incomplete: no vendored Ollama (src/ollama_runtime.py is Linux/macOS only) and no Windows branch in ui/server.py _enumerate_lan_ips (falls through to Linux ip/hostname -I)."
+          echo "::warning::Windows package is a PyInstaller .exe (unsigned, no installer). Vendored Ollama and LAN IP detection are implemented."
           mkdir -p dist/windows
           cp dist/portableai.exe "dist/windows/PortableAI-${GITHUB_REF_NAME}-windows-x64.exe"
           cp dist/portableai.exe "dist/windows/PortableAI-windows-x86_64.exe"
@@ -160,7 +160,7 @@ jobs:
             echo "## Packages"
             echo "- **Linux:** AppImage (PyInstaller + appimagetool). Complete packaged path for this OS."
             echo "- **macOS:** unsigned, unnotarized DMG. Gatekeeper will warn. No Apple Developer certificate is configured (\$99/year; secrets were not assumed)."
-            echo "- **Windows:** PyInstaller .exe only — incomplete. No vendored Ollama, no LAN IP detection. Read the attached INCOMPLETE.txt."
+            echo "- **Windows:** PyInstaller .exe (unsigned). Vendored Ollama + LAN IP detection included. Read the attached INCOMPLETE.txt."
             echo
             echo "## Stable download URLs"
             echo "These names stay the same across releases (always this latest build):"

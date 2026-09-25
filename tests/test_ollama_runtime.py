@@ -70,15 +70,146 @@ def test_download_url_darwin_uses_pinned_zip():
     )
 
 
-def test_supported_on_linux_and_darwin_only():
+def test_download_url_windows_uses_official_zip_not_setup_exe():
+    assert archive_name("AMD64", "win32") == "ollama-windows-amd64.zip"
+    assert archive_name("x86_64", "win32") == "ollama-windows-amd64.zip"
+    assert archive_name("ARM64", "win32") == "ollama-windows-arm64.zip"
+    url = download_url("AMD64", "win32")
+    assert url.endswith("/ollama-windows-amd64.zip")
+    assert "OllamaSetup.exe" not in url
+    assert ".tar.zst" not in url
+
+
+def _fake_extract_windows(archive: Path, dest_dir: Path) -> None:
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    (dest_dir / "ollama.exe").write_bytes(b"fake-win-ollama")
+
+
+def test_windows_missing_binary_downloads_official_zip(tmp_path):
+    fetched = []
+
+    def fake_fetch(url, dest):
+        fetched.append(url)
+        dest.write_bytes(b"zip-bytes")
+
+    path = ensure_binary(
+        tmp_path,
+        machine="AMD64",
+        platform_name="win32",
+        fetch=fake_fetch,
+        extract=_fake_extract_windows,
+    )
+    assert fetched == [
+        f"https://github.com/ollama/ollama/releases/download/{PINNED_VERSION}/"
+        "ollama-windows-amd64.zip"
+    ]
+    assert path == tmp_path / "ollama-bin" / "ollama.exe"
+    assert path.is_file()
+    assert (tmp_path / "ollama-bin" / "VERSION").read_text(encoding="utf-8").strip() == PINNED_VERSION
+
+
+def test_extract_windows_zip_places_ollama_exe(tmp_path):
+    import zipfile
+
+    from ollama_runtime import _extract_archive
+
+    archive = tmp_path / "ollama-windows-amd64.zip"
+    dest = tmp_path / "ollama-bin"
+    dest.mkdir()
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("ollama.exe", b"mz-fake")
+        zf.writestr("lib/ollama/llama-server.exe", b"runner")
+    _extract_archive(archive, dest)
+    assert (dest / "ollama.exe").read_bytes() == b"mz-fake"
+    assert (dest / "lib" / "ollama" / "llama-server.exe").is_file()
+
+
+def test_start_serve_windows_uses_exe_and_hidden_console(tmp_path, monkeypatch):
+    import subprocess
+
+    import ollama_runtime as runtime
+
+    monkeypatch.setattr(runtime.sys, "platform", "win32")
+    dest = tmp_path / "ollama-bin"
+    dest.mkdir()
+    (dest / "ollama.exe").write_bytes(b"fake")
+    (dest / "lib" / "ollama").mkdir(parents=True)
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        proc = MagicMock()
+        proc.poll.return_value = None
+        proc.pid = 99
+        return proc
+
+    runtime.start_serve(
+        tmp_path,
+        host="127.0.0.1:11435",
+        popen=fake_popen,
+        wait=lambda *a, **k: None,
+    )
+    assert captured["cmd"][0].endswith("ollama.exe")
+    assert captured["cmd"][1] == "serve"
+    flags = captured["kwargs"]["creationflags"]
+    assert flags & getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+    assert flags & getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    assert "start_new_session" not in captured["kwargs"]
+    assert "preexec_fn" not in captured["kwargs"]
+    path_env = captured["kwargs"]["env"]["PATH"]
+    assert str((tmp_path / "ollama-bin").resolve()) in path_env
+    assert str((tmp_path / "ollama-bin" / "lib" / "ollama").resolve()) in path_env
+
+
+def test_stop_windows_taskkills_process_tree(monkeypatch):
+    import subprocess
+
+    import ollama_runtime as runtime
+
+    monkeypatch.setattr(runtime.sys, "platform", "win32")
+    proc = MagicMock()
+    proc.poll.return_value = None
+    proc.pid = 4242
+    proc.wait.side_effect = [subprocess.TimeoutExpired(cmd="ollama", timeout=0.01), None]
+    seen = []
+
+    def fake_run(cmd, **_kwargs):
+        seen.append(cmd)
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(runtime.subprocess, "run", fake_run)
+    runtime.OllamaHandle(proc, DEFAULT_HOST, Path("/tmp"), Path("/tmp/ollama.exe")).stop(
+        timeout=0.01
+    )
+    assert seen[0][:4] == ["taskkill", "/F", "/T", "/PID"]
+    assert seen[0][4] == "4242"
+
+
+def test_start_managed_ollama_vendors_on_windows(tmp_path, monkeypatch):
+    fake = OllamaHandle(MagicMock(), "127.0.0.1:11436", tmp_path, tmp_path / "ollama.exe")
+
+    def fake_ensure(*_args, **_kwargs):
+        return fake
+
+    monkeypatch.setattr("ollama_runtime.ensure_and_start", fake_ensure)
+    mode, url, handle = start_managed_ollama(tmp_path, env={}, platform_name="win32")
+    assert mode == "bundled"
+    assert handle is fake
+
+
+def test_supported_on_linux_darwin_and_windows():
     assert supported_on_this_os("linux") is True
     assert supported_on_this_os("darwin") is True
-    assert supported_on_this_os("win32") is False
+    assert supported_on_this_os("win32") is True
+    assert supported_on_this_os("freebsd") is False
 
 
 def test_unsupported_architecture_raises():
-    with pytest.raises(OllamaRuntimeError, match="linux amd64/arm64 and macOS"):
+    with pytest.raises(OllamaRuntimeError, match="linux amd64/arm64, macOS, and Windows"):
         download_url("ppc64le", "linux")
+    with pytest.raises(OllamaRuntimeError, match="Windows amd64/arm64"):
+        download_url("ppc64le", "win32")
 
 
 @pytest.mark.parametrize(

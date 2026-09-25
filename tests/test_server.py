@@ -369,7 +369,7 @@ def test_api_status_unavailable_windows_not_bundled(mock_cls, client, app):
     data = client.get("/api/status").get_json()
     assert data["ollama_mode"] == "unavailable"
     assert data["ollama_available"] is False
-    assert "doesn't bundle Ollama on Windows yet" in data["ollama_reason"]
+    assert "doesn't bundle Ollama on this OS yet" in data["ollama_reason"]
     assert data["ollama_install_url"] == "https://ollama.com/download"
     pull = client.post(
         "/api/models/pull",
@@ -558,14 +558,18 @@ def test_api_models_formats_size_and_reports_path(mock_cls, client, app):
     assert data["models"][0]["quantization"] == "Q4_K_M"
     hint = data["models_path_hint"]
     assert hint
-    if sys.platform.startswith("linux") or sys.platform == "darwin":
+    if sys.platform.startswith("linux") or sys.platform == "darwin" or sys.platform.startswith("win"):
         assert hint == str((app.DATA_DIR / "ollama-models").resolve())
         assert " or " not in hint
 
 
 @pytest.mark.skipif(
-    not (sys.platform.startswith("linux") or sys.platform == "darwin"),
-    reason="bundled models path is Linux/macOS only",
+    not (
+        sys.platform.startswith("linux")
+        or sys.platform == "darwin"
+        or sys.platform.startswith("win")
+    ),
+    reason="bundled models path is Linux/macOS/Windows",
 )
 def test_models_path_hint_is_portableai_data_dir_when_bundled(app):
     hint = app._models_path_hint()
@@ -1547,6 +1551,54 @@ def test_enumerate_lan_ips_darwin_skips_link_local(mock_run, app):
 
     mock_run.side_effect = side_effect
     assert app._enumerate_lan_ips_darwin() == ["10.0.0.5"]
+
+
+_IPCONFIG_SAMPLE = """
+Windows IP Configuration
+
+Ethernet adapter Ethernet:
+
+   Connection-specific DNS Suffix  . : lan
+   IPv4 Address. . . . . . . . . . . : 192.168.1.134
+   Subnet Mask . . . . . . . . . . . : 255.255.255.0
+   Default Gateway . . . . . . . . . : 192.168.1.1
+
+Wireless LAN adapter Local Area Connection* 1:
+
+   Media State . . . . . . . . . . . : Media disconnected
+
+Ethernet adapter vEthernet (WSL):
+
+   Connection-specific DNS Suffix  . :
+   IPv4 Address. . . . . . . . . . . : 172.24.80.1
+   Subnet Mask . . . . . . . . . . . : 255.255.240.0
+
+Wireless LAN adapter Wi-Fi:
+
+   IPv4 Address. . . . . . . . . . . : 10.42.0.1
+   Subnet Mask . . . . . . . . . . . : 255.255.255.0
+"""
+
+
+def test_parse_windows_ipconfig_skips_wsl_and_keeps_lan(app):
+    ips = app._parse_windows_ipconfig(_IPCONFIG_SAMPLE)
+    assert ips == ["192.168.1.134", "10.42.0.1"]
+    assert "172.24.80.1" not in ips
+
+
+@patch("server.subprocess.run")
+def test_enumerate_lan_ips_windows_uses_ipconfig(mock_run, app):
+    mock_run.return_value = MagicMock(returncode=0, stdout=_IPCONFIG_SAMPLE)
+    ips = app._enumerate_lan_ips_windows()
+    assert ips == ["192.168.1.134", "10.42.0.1"]
+    mock_run.assert_called_once()
+    assert mock_run.call_args.args[0] == ["ipconfig"]
+
+
+@patch("server.subprocess.run")
+def test_enumerate_lan_ips_windows_empty_when_ipconfig_missing(mock_run, app):
+    mock_run.side_effect = FileNotFoundError
+    assert app._enumerate_lan_ips_windows() == []
 
 
 @patch("server._enumerate_lan_ips")

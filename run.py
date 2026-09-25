@@ -13,12 +13,11 @@ no shell scripts, no OS-specific activation commands:
 
 (`python3 run.py` on systems where "python" still means Python 2.)
 
-On Linux and macOS this also vendors a pinned standalone Ollama into
+On Linux, macOS, and Windows this also vendors a pinned standalone Ollama into
 data/ollama-bin/ (downloaded on first run) and launches `ollama serve`
 as a subprocess with models stored in data/ollama-models/. Set
 PORTABLEAI_EXTERNAL_OLLAMA_URL to skip that and use an Ollama you
-already run. Windows still needs a separate Ollama install
-(see https://ollama.com/download).
+already run.
 """
 from __future__ import annotations
 
@@ -66,7 +65,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Start, restart, or stop the PortableAI chat UI on port 5050. "
         "Only a leftover instance of this app (python run.py / ui/server.py) is ever stopped; "
-        "other programs on that port are left alone. On Linux/macOS, also starts a bundled Ollama."
+        "Only a leftover instance of this app (python run.py / ui/server.py) is ever stopped; "
+        "other programs on that port are left alone. On Linux/macOS/Windows, also starts a bundled Ollama."
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
@@ -88,7 +88,7 @@ def main() -> None:
     parser.add_argument(
         "--ollama-host",
         default="127.0.0.1:11434",
-        help="Host:port for bundled Ollama on Linux/macOS (default 127.0.0.1:11434).",
+        help="Host:port for bundled Ollama (default 127.0.0.1:11434).",
     )
     parser.add_argument(
         "--prefetch-only",
@@ -227,7 +227,7 @@ def main() -> None:
             server.set_managed_ollama_base_url(ollama_url, mode="bundled")
         else:
             print(
-                "Note: PortableAI does not bundle Ollama on this OS yet (Linux/macOS only). "
+                "Note: PortableAI does not bundle Ollama on this OS yet. "
                 "Install Ollama separately: https://ollama.com/download"
             )
             server.set_managed_ollama_base_url(None, mode="none")

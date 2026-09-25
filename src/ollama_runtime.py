@@ -1,14 +1,17 @@
 """
-Bootstrap for a PortableAI-vendored Ollama binary (Linux + macOS).
+Bootstrap for a PortableAI-vendored Ollama binary (Linux, macOS, Windows).
 
 On first run this downloads a pinned release into data/ollama-bin/,
 points OLLAMA_MODELS at data/ollama-models/, and runs `ollama serve` as
-a child of PortableAI. Windows is intentionally not handled here.
+a child of PortableAI.
 
 Linux: GitHub `.tar.zst` archives (amd64/arm64).
 macOS: pinned `Ollama-darwin.zip` (contains Ollama.app; CLI at
 Ollama.app/Contents/Resources/ollama). After extract we clear
 com.apple.quarantine so Gatekeeper does not block the first launch.
+Windows: pinned `ollama-windows-amd64.zip` / `ollama-windows-arm64.zip`
+(standalone `ollama.exe` at the zip root plus `lib/ollama/` DLLs —
+not OllamaSetup.exe, which is the GUI installer).
 
 We pin an exact GitHub tag in PINNED_VERSION / data/ollama-bin/VERSION
 so later starts do not silently drift to a newer download.
@@ -35,6 +38,9 @@ DARWIN_ARCHIVE = "Ollama-darwin.zip"
 # Verified against the v0.34.0 Ollama-darwin.zip contents on a real Mac:
 # the CLI lives next to the GUI dylibs inside the app bundle.
 DARWIN_CLI_RELATIVE = Path("Ollama.app") / "Contents" / "Resources" / "ollama"
+# GitHub release zips (v0.34.0): ollama.exe at the archive root, CUDA/CPU
+# libs under lib/ollama/. ollama.com/download's OllamaSetup.exe is a
+# different artifact (Inno Setup installer) and is not used here.
 DEFAULT_HOST = "127.0.0.1:11434"
 OLLAMA_HOST_TRIES = 10
 EXTERNAL_OLLAMA_ENV = "PORTABLEAI_EXTERNAL_OLLAMA_URL"
@@ -50,6 +56,13 @@ _ARCHIVE_BY_MACHINE_LINUX = {
     "amd64": "ollama-linux-amd64.tar.zst",
     "aarch64": "ollama-linux-arm64.tar.zst",
     "arm64": "ollama-linux-arm64.tar.zst",
+}
+
+_ARCHIVE_BY_MACHINE_WINDOWS = {
+    "amd64": "ollama-windows-amd64.zip",
+    "x86_64": "ollama-windows-amd64.zip",
+    "arm64": "ollama-windows-arm64.zip",
+    "aarch64": "ollama-windows-arm64.zip",
 }
 
 SYSTEM_OLLAMA_NOTICE = (
@@ -83,13 +96,28 @@ class OllamaHandle:
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
+            if sys.platform == "win32" and proc.pid:
+                # terminate() is TerminateProcess and does not walk the
+                # llama-server children Ollama spawns; /T does.
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    capture_output=True,
+                    timeout=5,
+                )
+                proc.wait(timeout=3)
+                return
             proc.kill()
             proc.wait(timeout=3)
 
 
+def _is_windows(platform_name: str | None = None) -> bool:
+    name = (platform_name or sys.platform).lower()
+    return name.startswith("win")
+
+
 def supported_on_this_os(platform_name: str | None = None) -> bool:
     name = platform_name or sys.platform
-    return name.startswith("linux") or name == "darwin"
+    return name.startswith("linux") or name == "darwin" or _is_windows(name)
 
 
 def external_ollama_url(env=None) -> str | None:
@@ -127,8 +155,9 @@ def models_dir(data_dir: Path) -> Path:
     return Path(data_dir) / "ollama-models"
 
 
-def binary_path(data_dir: Path) -> Path:
-    return bin_dir(data_dir) / "ollama"
+def binary_path(data_dir: Path, platform_name: str | None = None) -> Path:
+    name = "ollama.exe" if _is_windows(platform_name) else "ollama"
+    return bin_dir(data_dir) / name
 
 
 def version_path(data_dir: Path) -> Path:
@@ -145,10 +174,18 @@ def archive_name(machine: str | None = None, platform_name: str | None = None) -
         return DARWIN_ARCHIVE
     raw = (machine or platform.machine() or "").strip()
     key = raw.lower()
+    if _is_windows(plat):
+        name = _ARCHIVE_BY_MACHINE_WINDOWS.get(key)
+        if name is None:
+            raise OllamaRuntimeError(
+                f"PortableAI's bundled Ollama supports Windows amd64/arm64; "
+                f"this machine reports platform={plat!r} machine={raw!r}."
+            )
+        return name
     name = _ARCHIVE_BY_MACHINE_LINUX.get(key)
     if name is None:
         raise OllamaRuntimeError(
-            f"PortableAI's bundled Ollama supports linux amd64/arm64 and macOS; "
+            f"PortableAI's bundled Ollama supports linux amd64/arm64, macOS, and Windows; "
             f"this machine reports platform={plat!r} machine={raw!r}."
         )
     return name
@@ -178,8 +215,8 @@ def download_start_message(archive_filename: str) -> str:
     )
 
 
-def is_pinned_install(data_dir: Path) -> bool:
-    binary = binary_path(data_dir)
+def is_pinned_install(data_dir: Path, platform_name: str | None = None) -> bool:
+    binary = binary_path(data_dir, platform_name)
     pinned = version_path(data_dir)
     if not binary.is_file() or not pinned.is_file():
         return False
@@ -209,10 +246,10 @@ def ensure_binary(
     dest = bin_dir(data_dir)
     dest.mkdir(parents=True, exist_ok=True)
     _bind_setup_log(Path(data_dir))
-    if is_pinned_install(data_dir):
-        return binary_path(data_dir)
-
     plat = platform_name or sys.platform
+    if is_pinned_install(data_dir, platform_name=plat):
+        return binary_path(data_dir, plat)
+
     url = download_url(machine, plat)
     archive = dest / archive_name(machine, plat)
     print(download_start_message(archive.name), flush=True)
@@ -231,7 +268,7 @@ def ensure_binary(
     finally:
         archive.unlink(missing_ok=True)
 
-    installed = binary_path(data_dir)
+    installed = binary_path(data_dir, plat)
     if not installed.is_file():
         raise OllamaRuntimeError(
             f"extracted Ollama {PINNED_VERSION} but {installed} is missing"
@@ -323,10 +360,18 @@ def start_serve(
         "env": child_env,
         "stdout": log_file,
         "stderr": subprocess.STDOUT,
-        "start_new_session": True,
     }
-    if sys.platform.startswith("linux"):
-        kwargs["preexec_fn"] = _linux_pdeathsig
+    if sys.platform == "win32":
+        # POSIX start_new_session is a no-op here. CREATE_NEW_PROCESS_GROUP
+        # lets us signal the tree; CREATE_NO_WINDOW hides the extra console
+        # a double-clicked .exe would otherwise flash.
+        flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        kwargs["creationflags"] = flags
+    else:
+        kwargs["start_new_session"] = True
+        if sys.platform.startswith("linux"):
+            kwargs["preexec_fn"] = _linux_pdeathsig
 
     print(f"Starting bundled Ollama {PINNED_VERSION} at {host} (models: {models_abs})")
     try:
@@ -406,7 +451,7 @@ def ensure_and_start(
     start=None,
 ) -> OllamaHandle:
     if not supported_on_this_os(platform_name):
-        raise OllamaRuntimeError("bundled Ollama is only supported on Linux and macOS")
+        raise OllamaRuntimeError("bundled Ollama is only supported on Linux, macOS, and Windows")
     warn_if_system_ollama(which=which)
     ensure_binary(
         data_dir,
@@ -581,9 +626,29 @@ def _extract_archive(archive: Path, dest_dir: Path) -> None:
     elif name.endswith(".zip"):
         with zipfile.ZipFile(archive, "r") as zf:
             zf.extractall(dest_dir)
-        _place_binary_darwin(dest_dir)
+        if "darwin" in name.lower() or (dest_dir / "Ollama.app").is_dir():
+            _place_binary_darwin(dest_dir)
+        else:
+            _place_binary_windows(dest_dir)
     else:
         raise OllamaRuntimeError(f"unsupported Ollama archive format: {name}")
+
+
+def _place_binary_windows(dest_dir: Path) -> None:
+    """Make sure data/ollama-bin/ollama.exe exists (zip root is the usual layout)."""
+    target = dest_dir / "ollama.exe"
+    if target.is_file():
+        return
+    nested = dest_dir / "bin" / "ollama.exe"
+    if nested.is_file():
+        shutil.copy2(nested, target)
+        return
+    found = next((p for p in dest_dir.rglob("ollama.exe") if p.is_file()), None)
+    if found is None:
+        raise OllamaRuntimeError(
+            f"extracted archive did not contain ollama.exe under {dest_dir}"
+        )
+    shutil.copy2(found, target)
 
 
 def _place_binary_linux(dest_dir: Path) -> None:
@@ -649,9 +714,13 @@ def _prepend_library_path(env: dict[str, str], install_dir: Path) -> None:
     ):
         if candidate.is_dir():
             extras.append(str(candidate.resolve()))
+    if sys.platform == "win32":
+        extras.append(str(install_dir.resolve()))
     if not extras:
         return
-    if sys.platform == "darwin":
+    if sys.platform == "win32":
+        key = "PATH"
+    elif sys.platform == "darwin":
         key = "DYLD_LIBRARY_PATH"
     else:
         key = "LD_LIBRARY_PATH"

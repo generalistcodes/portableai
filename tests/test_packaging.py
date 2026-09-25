@@ -122,7 +122,9 @@ def test_windows_incomplete_file_names_the_real_gaps():
     text = (ROOT / "packaging/windows/INCOMPLETE.txt").read_text(encoding="utf-8")
     assert "_enumerate_lan_ips" in text
     assert "ollama_runtime" in text
-    assert "Linux" in text and "macOS" in text
+    assert "ipconfig" in text
+    assert "ollama-windows-amd64.zip" in text
+    assert "ollama.exe" in text
 
 
 def test_makefile_has_release_and_help_default():

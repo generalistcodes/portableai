@@ -216,7 +216,7 @@ Ollama if `run.py` set it, else `settings.json` `base_url`).
 `default` means no managed URL was set (for example tests that import
 the server module without `run.py`). `unavailable` means Ollama is not
 reachable right now — either this OS has no bundled binary yet
-(Windows today) or a configured instance refused the connection.
+or a configured instance refused the connection.
 `ollama_reason` is the human-readable sentence the UI banner and
 model-pull 503 share; empty when Ollama is up. On the unsupported-OS
 case the payload also includes
@@ -475,8 +475,8 @@ invalid catalog file → `[]`.
 else **400** `{"error": "name is required"}`.
 
 **503** `{"error": "<ollama_reason>"}` — same sentence as
-`GET /api/status` `ollama_reason` when Ollama is down (Windows: not
-bundled yet; otherwise `"Cannot reach Ollama -- is it running?"`).
+`GET /api/status` `ollama_reason` when Ollama is down (unsupported OS:
+not bundled yet; otherwise `"Cannot reach Ollama -- is it running?"`).
 Plain JSON; pull does not start.
 
 Once the pull starts, **200** with `Content-Type: application/x-ndjson`:

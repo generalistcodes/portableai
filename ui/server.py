@@ -120,7 +120,7 @@ _managed_ollama_mode: str | None = None
 
 OLLAMA_REASON_UNREACHABLE = "Cannot reach Ollama -- is it running?"
 OLLAMA_REASON_NOT_BUNDLED = (
-    "PortableAI doesn't bundle Ollama on Windows yet -- "
+    "PortableAI doesn't bundle Ollama on this OS yet -- "
     "install it separately from https://ollama.com/download"
 )
 OLLAMA_INSTALL_URL = "https://ollama.com/download"
@@ -458,6 +458,66 @@ def _enumerate_lan_ips_linux() -> list[str]:
     return ips
 
 
+def _skip_windows_adapter(name: str) -> bool:
+    """Hyper-V/WSL/VM nics a phone on Wi-Fi cannot reach."""
+    n = (name or "").lower()
+    return any(
+        needle in n
+        for needle in (
+            "loopback",
+            "wsl",
+            "hyper-v",
+            "vethernet",
+            "virtualbox",
+            "vmware",
+            "docker",
+            "bluetooth",
+            "pseudo",
+        )
+    )
+
+
+def _parse_windows_ipconfig(text: str) -> list[str]:
+    """Pull IPv4 addresses out of English `ipconfig` (or `ipconfig /all`)."""
+    ips: list[str] = []
+    skip = False
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        stripped = line.strip()
+        if stripped.endswith(":") and "adapter" in stripped.lower() and not line.startswith((" ", "\t")):
+            skip = _skip_windows_adapter(stripped[:-1])
+            continue
+        if skip:
+            continue
+        label = stripped.lower()
+        if "ipv4 address" not in label and not label.startswith("ip address"):
+            continue
+        if ":" not in stripped:
+            continue
+        ip = stripped.rsplit(":", 1)[-1].strip().split("(", 1)[0].strip()
+        if ip and _usable_lan_ip(ip):
+            ips.append(ip)
+    return ips
+
+
+def _enumerate_lan_ips_windows() -> list[str]:
+    """Windows: parse `ipconfig` (ships with every supported SKU)."""
+    try:
+        result = subprocess.run(
+            ["ipconfig"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    return _parse_windows_ipconfig(result.stdout or "")
+
+
 def _enumerate_lan_ips() -> list[str]:
     """Every non-loopback IPv4 address currently assigned to this
     machine, across all interfaces. Deliberately does NOT rely on
@@ -469,6 +529,8 @@ def _enumerate_lan_ips() -> list[str]:
     to the outside world."""
     if sys.platform == "darwin":
         return _enumerate_lan_ips_darwin()
+    if sys.platform.startswith("win"):
+        return _enumerate_lan_ips_windows()
     return _enumerate_lan_ips_linux()
 
 
@@ -825,12 +887,11 @@ def _human_size(num_bytes) -> str | None:
 def _models_path_hint() -> str:
     """Where this PortableAI instance stores GGUF blobs.
 
-    On Linux and macOS, run.py launches a bundled Ollama with
-    OLLAMA_MODELS pointed at data/ollama-models/, so the path is known
-    and controlled. Windows still guesses from $OLLAMA_MODELS or the
-    documented default.
+    run.py launches a bundled Ollama with OLLAMA_MODELS pointed at
+    data/ollama-models/, so the path is known and controlled. Unknown
+    OSes still guess from $OLLAMA_MODELS or the documented default.
     """
-    if sys.platform.startswith("linux") or sys.platform == "darwin":
+    if sys.platform.startswith("linux") or sys.platform == "darwin" or sys.platform.startswith("win"):
         return str(models_dir(DATA_DIR).resolve())
     env = os.environ.get("OLLAMA_MODELS")
     if env:

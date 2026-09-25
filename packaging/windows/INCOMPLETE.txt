@@ -1,19 +1,16 @@
-PortableAI Windows package — incomplete
+PortableAI Windows package
 
 This .exe is a PyInstaller one-file build of the Python UI. It is not a
-full Windows installer.
+signed installer; SmartScreen will warn.
 
 What works
-- The chat UI process, same as `python run.py` on Windows.
-- Talking to a separately installed Ollama over HTTP.
-
-What is not built yet (see docs/ROADMAP.md)
-- Vendored Ollama download/lifecycle. src/ollama_runtime.py only
-  supports Linux and macOS. First run prints that you must install
-  Ollama yourself: https://ollama.com/download
+- Vendored Ollama. src/ollama_runtime.py downloads the GitHub
+  ollama-windows-amd64.zip (standalone ollama.exe at the zip root plus
+  lib/ollama/ DLLs — not OllamaSetup.exe) and launches `ollama serve`
+  the same way as Linux/macOS.
 - LAN IP detection for phone pairing. ui/server.py's _enumerate_lan_ips
-  has Linux (`ip` / `hostname -I`) and macOS (`ifconfig` / `ipconfig`)
-  branches only. On Windows it falls through to the Linux commands,
-  which are not present, so the pairing QR will not get a LAN address.
+  has a Windows `ipconfig` branch alongside Linux (`ip` / `hostname -I`)
+  and macOS (`ifconfig` / `ipconfig getifaddr`).
 
-Do not treat this artifact as a finished Windows product.
+What is still incomplete
+- No Authenticode signature, no Inno/MSI installer.

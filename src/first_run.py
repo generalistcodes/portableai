@@ -319,7 +319,7 @@ def run_prefetch(
     try:
         if mode == "none" or not url:
             print(
-                "Note: PortableAI does not bundle Ollama on this OS yet (Linux/macOS only). "
+                "Note: PortableAI does not bundle Ollama on this OS yet. "
                 "Install Ollama separately: https://ollama.com/download",
                 file=out,
             )
