@@ -10,6 +10,13 @@ const state = {
 
 const DEVICE_TOKEN_KEY = "portableai_device_token";
 let deviceToken = localStorage.getItem(DEVICE_TOKEN_KEY) || localStorage.getItem("portableai.device_token") || null;
+const MIRROR_POLL_MS = 2500;
+let mirrorDeviceId = null;
+let mirrorConversationId = null;
+let mirrorPayload = null;
+let mirrorSignature = "";
+let mirrorPollTimer = null;
+let mirrorPinned = false;
 
 const el = (id) => document.getElementById(id);
 
@@ -805,6 +812,7 @@ async function loadPersonas() {
 }
 
 async function selectPersona(id) {
+  exitMirror();
   closeMobileSidebar();
   const persona = (state.personas || []).find((p) => p.id === id);
   if (persona && persona.model_installed === false) {
@@ -854,6 +862,7 @@ function showEmptyState(persona) {
 }
 
 function beginNewChat() {
+  exitMirror();
   closeMobileSidebar();
   state.conversationId = null;
   const persona = currentPersona() || pickDefaultPersona(state.personas);
@@ -1031,6 +1040,7 @@ async function sendMessage(text) {
 
 el("composer").addEventListener("submit", (e) => {
   e.preventDefault();
+  if (mirrorDeviceId) return;
   const input = el("input");
   const text = input.value.trim();
   if (!text) return;
@@ -1116,6 +1126,7 @@ function debounce(fn, wait) {
 }
 
 async function loadConversations() {
+  if (mirrorDeviceId) return;
   const params = new URLSearchParams();
   if (el("archivedToggle").checked) params.set("archived", "1");
   const q = el("searchInput").value.trim();
@@ -1161,6 +1172,7 @@ function renderConversationList(convs) {
 }
 
 async function openConversation(id) {
+  exitMirror();
   closeMobileSidebar();
   let conv;
   try {
@@ -1198,6 +1210,15 @@ async function openConversation(id) {
 }
 
 el("conversationList").addEventListener("click", async (e) => {
+  if (mirrorDeviceId) {
+    const titleBtn = e.target.closest(".conversation-title");
+    if (!titleBtn || !mirrorPayload) return;
+    mirrorPinned = true;
+    mirrorConversationId = titleBtn.dataset.id;
+    mirrorSignature = "";
+    renderMirror(mirrorPayload);
+    return;
+  }
   const actionBtn = e.target.closest(".icon-btn");
   if (actionBtn) {
     e.stopPropagation();
@@ -1912,9 +1933,14 @@ function setPairingHidden(id, hidden) {
   if (node) node.classList.toggle("hidden", hidden);
 }
 
+let lastPairingDevices = [];
+let pendingParentForNextClaim = null;
+let pairLinkSyncing = false;
+
 async function loadPairingInfo() {
   try {
     const data = await api("/api/pairing/pin");
+    pendingParentForNextClaim = data.pending_parent_device_id || null;
     setPairingText("pairingPinText", data.pin);
     setPairingText("connectPinText", data.pin);
     setPairingText("lanUrlText", data.lan_url);
@@ -1933,8 +1959,10 @@ async function loadPairingInfo() {
   }
   try {
     const devices = await api("/api/pairing/devices");
+    lastPairingDevices = devices;
     maybeAnnounceNewPair(devices);
     renderPairedDevices(devices);
+    renderPairLinkControls(devices, pendingParentForNextClaim);
   } catch {
     el("pairedDevicesList").innerHTML = '<p class="muted small">Could not load paired devices.</p>';
   }
@@ -1986,8 +2014,89 @@ function fillFamilyPasswordStatus(isSet, opts = {}) {
   if (opts.clearInput) input.value = "";
 }
 
-function renderPairedDevices(devices) {
+function renderPairLinkControls(devices, pendingParent) {
+  pairLinkSyncing = true;
   const list = Array.isArray(devices) ? devices : [];
+  const pending = pendingParent && list.some((d) => d.token === pendingParent) ? pendingParent : null;
+  document.querySelectorAll(".pair-parent-select").forEach((sel) => {
+    sel.innerHTML = "";
+    list.forEach((d) => {
+      const opt = document.createElement("option");
+      opt.value = d.token;
+      opt.textContent = d.name || "Unnamed device";
+      sel.appendChild(opt);
+    });
+    if (pending) sel.value = pending;
+    sel.disabled = !list.length;
+  });
+  document.querySelectorAll(".pair-link-block").forEach((block) => {
+    const child = block.querySelector('input[value="child"]');
+    const independent = block.querySelector('input[value="independent"]');
+    if (child) {
+      child.checked = Boolean(pending);
+      child.disabled = !list.length;
+    }
+    if (independent) independent.checked = !pending;
+  });
+  pairLinkSyncing = false;
+}
+
+async function commitPairLink(parent) {
+  if (pairLinkSyncing) return;
+  try {
+    const data = await api("/api/pairing/link", {
+      method: "POST",
+      body: JSON.stringify({ parent_device_id: parent }),
+    });
+    pendingParentForNextClaim = data.parent_device_id || null;
+  } catch (err) {
+    if (err.pairingRequired) return;
+  }
+  renderPairLinkControls(lastPairingDevices, pendingParentForNextClaim);
+}
+
+document.addEventListener("change", (e) => {
+  const block = e.target.closest(".pair-link-block");
+  if (!block || pairLinkSyncing) return;
+  const select = block.querySelector(".pair-parent-select");
+  const childRadio = block.querySelector('input[value="child"]');
+  if (e.target.classList.contains("pair-parent-select") && childRadio && !childRadio.disabled) {
+    childRadio.checked = true;
+  }
+  const asChild = childRadio && childRadio.checked && select && select.value;
+  commitPairLink(asChild ? select.value : null);
+});
+
+const DEVICE_INACTIVE_SECONDS = 24 * 60 * 60;
+
+function deviceSeenAt(device) {
+  const seen = Number(device && device.last_seen);
+  return Number.isFinite(seen) && seen > 0 ? seen : 0;
+}
+
+function deviceIsInactive(device) {
+  const seen = deviceSeenAt(device);
+  if (!seen) return true;
+  return (Date.now() / 1000 - seen) > DEVICE_INACTIVE_SECONDS;
+}
+
+function formatLastSeen(ts) {
+  if (!ts) return "Not seen yet";
+  const diff = Date.now() / 1000 - ts;
+  if (diff < 60) return "Last seen just now";
+  if (diff < 3600) return `Last seen ${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `Last seen ${Math.floor(diff / 3600)}h ago`;
+  return `Last seen ${Math.floor(diff / 86400)}d ago`;
+}
+
+function compareDevicesByActivity(a, b) {
+  const bySeen = deviceSeenAt(b) - deviceSeenAt(a);
+  if (bySeen) return bySeen;
+  return (b.paired_at || 0) - (a.paired_at || 0);
+}
+
+function renderPairedDevices(devices) {
+  const list = (Array.isArray(devices) ? devices.slice() : []).sort(compareDevicesByActivity);
   updateDeviceCountLabel(list.length);
   const container = el("pairedDevicesList");
   if (!container) return;
@@ -1995,23 +2104,62 @@ function renderPairedDevices(devices) {
     container.innerHTML = '<p class="muted small">No devices paired yet.</p>';
     return;
   }
+  const byToken = {};
+  list.forEach((d) => { byToken[d.token] = d; });
   container.innerHTML = "";
   list.forEach((d) => {
     const row = document.createElement("div");
-    row.className = "model-row";
-    const paired = new Date(d.paired_at * 1000).toLocaleDateString();
-    row.innerHTML = `
-      <span>
-        <span class="model-name">${escapeHtml(d.name)}</span><br>
-        <span class="model-detail">paired ${paired}</span>
-      </span>
-      <button class="icon-btn" data-token="${d.token}" title="Revoke">🗑</button>
-    `;
+    row.className = "model-row" + (deviceIsInactive(d) ? " device-inactive" : "");
+    const paired = new Date((d.paired_at || 0) * 1000).toLocaleDateString();
+    const parent = d.parent_device_id ? byToken[d.parent_device_id] : null;
+    const kids = list.filter((other) => other.parent_device_id === d.token);
+    const detail = document.createElement("span");
+    const name = document.createElement("span");
+    name.className = "model-name";
+    name.textContent = d.name || "Unnamed device";
+    const meta = document.createElement("span");
+    meta.className = "model-detail";
+    const bits = [`Paired ${paired}`, formatLastSeen(deviceSeenAt(d))];
+    if (deviceIsInactive(d)) bits.push("Inactive");
+    if (parent) {
+      const parentWhen = parent.paired_at ? new Date(parent.paired_at * 1000).toLocaleDateString() : "unknown date";
+      bits.push(`Child of ${parent.name || "Unnamed device"} (paired ${parentWhen})`);
+    }
+    if (kids.length) bits.push(kids.length === 1 ? "Parent of 1 device" : `Parent of ${kids.length} devices`);
+    meta.textContent = bits.join(" · ");
+    detail.appendChild(name);
+    detail.appendChild(document.createElement("br"));
+    detail.appendChild(meta);
+    const actions = document.createElement("span");
+    actions.className = "device-row-actions";
+    kids.forEach((kid) => {
+      const live = document.createElement("button");
+      live.type = "button";
+      live.className = "device-live-btn";
+      live.dataset.mirrorId = kid.id;
+      live.dataset.mirrorName = kid.name || "Device";
+      live.textContent = kids.length > 1 ? `View live chat · ${kid.name || "Device"}` : "View live chat";
+      actions.appendChild(live);
+    });
+    const revoke = document.createElement("button");
+    revoke.className = "icon-btn";
+    revoke.dataset.token = d.token;
+    revoke.title = "Revoke";
+    revoke.textContent = "🗑";
+    actions.appendChild(revoke);
+    row.appendChild(detail);
+    row.appendChild(actions);
     container.appendChild(row);
   });
 }
 
 el("pairedDevicesList").addEventListener("click", async (e) => {
+  const live = e.target.closest(".device-live-btn");
+  if (live) {
+    closeModal("settingsModal");
+    openMirror({ id: live.dataset.mirrorId, name: live.dataset.mirrorName });
+    return;
+  }
   const btn = e.target.closest(".icon-btn[data-token]");
   if (!btn) return;
     if (!window.confirm("Revoke this device? It will need to pair again with a new PIN or the family password.")) return;
@@ -2120,6 +2268,7 @@ async function reloadAfterPairing() {
   await loadPersonas();
   await loadModels();
   await loadConversations();
+  await loadChildDevices();
   await refreshStatus();
 }
 
@@ -2181,6 +2330,183 @@ el("clearLogsBtn").addEventListener("click", async () => {
   el("logsList").innerHTML = '<p class="muted small">No requests logged yet.</p>';
 });
 
+function stopMirrorPoll() {
+  if (mirrorPollTimer) {
+    clearInterval(mirrorPollTimer);
+    mirrorPollTimer = null;
+  }
+}
+
+function startMirrorPoll() {
+  stopMirrorPoll();
+  if (!mirrorDeviceId || document.hidden) return;
+  mirrorPollTimer = setInterval(refreshMirror, MIRROR_POLL_MS);
+}
+
+function exitMirror() {
+  const wasOpen = Boolean(mirrorDeviceId);
+  stopMirrorPoll();
+  mirrorDeviceId = null;
+  mirrorConversationId = null;
+  mirrorPayload = null;
+  mirrorSignature = "";
+  mirrorPinned = false;
+  document.body.classList.remove("mirroring");
+  const banner = el("mirrorBanner");
+  if (banner) banner.classList.add("hidden");
+  document.querySelectorAll(".child-device-btn").forEach((btn) => btn.classList.remove("active"));
+  if (wasOpen) loadConversations();
+}
+
+function mirrorSig(conv) {
+  const msgs = (conv && conv.messages) || [];
+  const last = msgs[msgs.length - 1];
+  return `${conv.id}:${msgs.length}:${last ? last.content : ""}`;
+}
+
+function renderMirrorConversationList(convs) {
+  const container = el("conversationList");
+  if (!container) return;
+  container.innerHTML = "";
+  if (!convs.length) {
+    container.innerHTML = '<p class="muted small" style="padding:8px 10px;">No chats yet.</p>';
+    return;
+  }
+  convs.forEach((c) => {
+    const row = document.createElement("div");
+    row.className = "conversation-item" + (c.id === mirrorConversationId ? " active" : "");
+    const titleBtn = document.createElement("button");
+    titleBtn.type = "button";
+    titleBtn.className = "conversation-title";
+    titleBtn.dataset.id = c.id;
+    titleBtn.innerHTML = `<span>${escapeHtml(c.title || "New chat")}</span><span class="conversation-meta">${escapeHtml(personaLabelById(c.persona))} · ${timeAgo(c.updated_at)}</span>`;
+    row.appendChild(titleBtn);
+    container.appendChild(row);
+  });
+}
+
+function renderMirrorMessages(conv) {
+  const messages = el("messages");
+  if (!messages) return;
+  messages.innerHTML = "";
+  if (!conv || !(conv.messages || []).length) {
+    messages.innerHTML = '<div class="empty-state"><h1>No messages yet</h1><p class="muted">New messages show up here while this view stays open.</p></div>';
+    return;
+  }
+  conv.messages.forEach((m) => {
+    appendMessage(m.role, m.content, "", { source: m.source });
+  });
+}
+
+function renderMirror(data) {
+  mirrorPayload = data;
+  const convs = (data && data.conversations) || [];
+  const pinnedStillThere = mirrorPinned && convs.some((c) => c.id === mirrorConversationId);
+  if (!pinnedStillThere) {
+    mirrorConversationId = convs.length ? convs[0].id : null;
+  }
+  renderMirrorConversationList(convs);
+  const conv = convs.find((c) => c.id === mirrorConversationId) || null;
+  const sig = conv ? mirrorSig(conv) : "";
+  if (sig === mirrorSignature) return;
+  mirrorSignature = sig;
+  renderMirrorMessages(conv);
+}
+
+async function refreshMirror() {
+  if (!mirrorDeviceId || document.hidden) return;
+  const id = mirrorDeviceId;
+  try {
+    const data = await api(`/api/devices/${encodeURIComponent(id)}/mirror`);
+    if (mirrorDeviceId !== id) return;
+    renderMirror(data);
+  } catch (err) {
+    if (err.pairingRequired || mirrorDeviceId !== id) return;
+    exitMirror();
+    appendMessage("error", err.message || "Could not mirror that device");
+  }
+}
+
+function openMirror(device) {
+  if (!device || !device.id) return;
+  closeMobileSidebar();
+  mirrorDeviceId = device.id;
+  mirrorConversationId = null;
+  mirrorPinned = false;
+  mirrorPayload = null;
+  mirrorSignature = "";
+  document.body.classList.add("mirroring");
+  const banner = el("mirrorBanner");
+  if (banner) banner.classList.remove("hidden");
+  const text = el("mirrorBannerText");
+  if (text) text.textContent = `Mirroring ${device.name || "device"}`;
+  document.querySelectorAll(".child-device-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.id === device.id);
+  });
+  refreshMirror();
+  startMirrorPoll();
+}
+
+function renderChildDevices(devices) {
+  const section = el("childDevicesSection");
+  const list = el("childDevicesList");
+  if (!section || !list) return;
+  const children = Array.isArray(devices) ? devices : [];
+  if (!children.length) {
+    section.classList.add("hidden");
+    list.innerHTML = "";
+    return;
+  }
+  section.classList.remove("hidden");
+  list.innerHTML = "";
+  children.forEach((d) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "child-device-btn" + (d.id === mirrorDeviceId ? " active" : "");
+    btn.dataset.id = d.id;
+    const action = document.createElement("span");
+    action.className = "mirrored-chat-action";
+    action.textContent = "View live chat";
+    const who = document.createElement("span");
+    who.className = "conversation-meta";
+    who.textContent = d.name || "Device";
+    const label = document.createElement("span");
+    label.appendChild(action);
+    label.appendChild(who);
+    btn.appendChild(label);
+    btn.addEventListener("click", () => openMirror(d));
+    list.appendChild(btn);
+  });
+}
+
+async function loadChildDevices() {
+  if (!deviceToken) {
+    renderChildDevices([]);
+    return;
+  }
+  try {
+    const devices = await api("/api/devices");
+    renderChildDevices(devices);
+  } catch (err) {
+    if (err.pairingRequired) return;
+    renderChildDevices([]);
+  }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    stopMirrorPoll();
+    return;
+  }
+  if (deviceToken) loadChildDevices();
+  if (!mirrorDeviceId) return;
+  refreshMirror();
+  startMirrorPoll();
+});
+
+const stopMirrorBtn = el("stopMirrorBtn");
+if (stopMirrorBtn) stopMirrorBtn.addEventListener("click", exitMirror);
+
 async function init() {
   if (new URLSearchParams(location.search).has("pair_pin")) {
     await tryAutoPairFromUrl();
@@ -2190,6 +2516,7 @@ async function init() {
   loadModels();
   loadCatalog();
   loadConversations();
+  loadChildDevices();
   refreshStatus();
   syncThemeFromServer();
   maybeAutoCheckUpdatesOnStartup();

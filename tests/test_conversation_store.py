@@ -240,6 +240,21 @@ def test_connect_zero_byte_file_warns_then_initializes(tmp_path, caplog):
     conn.close()
 
 
+def test_owned_messages_query_never_crosses_owners(conn):
+    conv_a = store.create_conversation(conn, "no-nonsense-mentor", "llama3.2:3b", DEVICE_A)
+    conv_b = store.create_conversation(conn, "no-nonsense-mentor", "llama3.2:3b", DEVICE_B)
+    store.add_message(conn, conv_a, "user", "secret-from-a")
+    store.add_message(conn, conv_b, "user", "secret-from-b")
+    owned = store.list_owned_conversations_with_messages(conn, DEVICE_A)
+    assert [c["id"] for c in owned] == [conv_a]
+    assert owned[0]["messages"][0]["content"] == "secret-from-a"
+    assert "owner_id" not in owned[0]
+    dumped = str(owned)
+    assert "secret-from-b" not in dumped
+    assert store.list_owned_conversations_with_messages(conn, "") == []
+    assert store.list_owned_conversations_with_messages(conn, None) == []
+
+
 def test_connect_garbage_header_raises_chat_database_error(tmp_path):
     path = tmp_path / "chats.db"
     path.write_bytes(b"this is not a sqlite database at all!!!!")

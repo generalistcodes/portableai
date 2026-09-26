@@ -242,6 +242,44 @@ def list_conversations(
     return [dict(r) for r in rows]
 
 
+def list_owned_conversations_with_messages(conn: sqlite3.Connection, owner_id: str) -> list[dict]:
+    """Active chats for exactly one owner, messages included.
+
+    ``owner_id`` is required. Unlike ``list_conversations``, None does
+    not mean every device — an empty owner returns nothing. Message
+    rows are joined back to that same owner so a conversation id alone
+    cannot pull another device's messages.
+    """
+    if not owner_id:
+        return []
+    rows = conn.execute(
+        "SELECT id, persona, model_used, title, created_at, updated_at, archived "
+        "FROM conversations WHERE owner_id = ? AND archived = 0 "
+        "ORDER BY updated_at DESC",
+        (owner_id,),
+    ).fetchall()
+    convs = []
+    for row in rows:
+        conv = dict(row)
+        msg_rows = conn.execute(
+            "SELECT m.role, m.content, m.latency_ms, m.created_at, m.source, "
+            "m.source_id, m.source_meta "
+            "FROM messages m "
+            "INNER JOIN conversations c ON c.id = m.conversation_id "
+            "WHERE c.owner_id = ? AND m.conversation_id = ? "
+            "ORDER BY m.id ASC",
+            (owner_id, conv["id"]),
+        ).fetchall()
+        messages = []
+        for msg in msg_rows:
+            item = dict(msg)
+            item["source_meta"] = _parse_source_meta(item.get("source_meta"))
+            messages.append(item)
+        conv["messages"] = messages
+        convs.append(conv)
+    return convs
+
+
 def set_archived(conn: sqlite3.Connection, conversation_id: str, archived: bool) -> None:
     conn.execute(
         "UPDATE conversations SET archived = ?, updated_at = ? WHERE id = ?",

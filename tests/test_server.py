@@ -1270,6 +1270,211 @@ def _lan_headers(token):
     return {"Authorization": f"Bearer {token}"}
 
 
+def _add_chat_message(app, conv_id, content):
+    conn = conversation_store.connect(app.DB_FILE)
+    try:
+        conversation_store.add_message(conn, conv_id, "user", content)
+    finally:
+        conn.close()
+
+
+def test_parent_sees_only_its_child_and_nowhere_else(client, app):
+    """Cross-device reads go through the mirror query, not the UI."""
+    parent = _pair_device(app, "Parent phone")
+    stranger = _pair_device(app, "Stranger")
+
+    denied = client.post(
+        "/api/pairing/link",
+        data=json.dumps({"parent_device_id": stranger}),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+        headers=_lan_headers(stranger),
+    )
+    assert denied.status_code == 403
+    assert pairing_store.get_pending_parent(app.PAIRING_FILE) is None
+
+    unknown = client.post(
+        "/api/pairing/link",
+        data=json.dumps({"parent_device_id": "not-a-device"}),
+        content_type="application/json",
+    )
+    assert unknown.status_code == 400
+
+    linked = client.post(
+        "/api/pairing/link",
+        data=json.dumps({"parent_device_id": parent}),
+        content_type="application/json",
+    )
+    assert linked.status_code == 200
+    assert linked.get_json()["parent_device_id"] == parent
+    # Choosing a parent must not rewrite devices that already paired.
+    before = {d["token"]: d for d in pairing_store.list_devices(app.PAIRING_FILE)}
+    assert before[parent]["parent_device_id"] is None
+    assert before[stranger]["parent_device_id"] is None
+
+    pin = client.get("/api/pairing/pin").get_json()["pin"]
+    rejected = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({
+            "pin": pin,
+            "device_name": "Child phone",
+            "parent_device_id": stranger,
+        }),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+    )
+    assert rejected.status_code == 403
+    assert rejected.get_json()["error"] == "parent_device_id can only be set from the server machine"
+    # The rejected attempt must not consume the PIN or create a device.
+    assert pairing_store.get_current_pin(app.PAIRING_FILE)["pin"] == pin
+    claim = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"pin": pin, "device_name": "Child phone"}),
+        content_type="application/json",
+        environ_overrides=LAN_ENV,
+    )
+    assert claim.status_code == 200, claim.get_data(as_text=True)
+    assert set(claim.get_json()) == {"device_token"}
+    child = claim.get_json()["device_token"]
+    rows = {d["token"]: d for d in pairing_store.list_devices(app.PAIRING_FILE)}
+    assert rows[child]["parent_device_id"] == parent
+    assert rows[parent]["parent_device_id"] is None
+    assert rows[stranger]["parent_device_id"] is None
+    assert pairing_store.get_pending_parent(app.PAIRING_FILE) is None
+
+    # No pending link, and a phone still cannot appoint its own parent.
+    pin_solo = client.get("/api/pairing/pin").get_json()["pin"]
+    solo_rejected = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({
+            "pin": pin_solo,
+            "device_name": "Solo",
+            "parent_device_id": parent,
+        }),
+        content_type="application/json",
+        environ_overrides={"REMOTE_ADDR": "192.168.1.60"},
+    )
+    assert solo_rejected.status_code == 403
+    assert pairing_store.get_current_pin(app.PAIRING_FILE)["pin"] == pin_solo
+    solo_resp = client.post(
+        "/api/pairing/claim",
+        data=json.dumps({"pin": pin_solo, "device_name": "Solo"}),
+        content_type="application/json",
+        environ_overrides={"REMOTE_ADDR": "192.168.1.60"},
+    )
+    assert solo_resp.status_code == 200
+    solo = solo_resp.get_json()["device_token"]
+    rows = {d["token"]: d for d in pairing_store.list_devices(app.PAIRING_FILE)}
+    assert rows[solo]["parent_device_id"] is None
+    # Already-paired devices cannot be converted into children later.
+    retro = client.patch(
+        f"/api/pairing/devices/{solo}",
+        data=json.dumps({"parent_device_id": parent}),
+        content_type="application/json",
+    )
+    assert retro.status_code == 405
+    rows = {d["token"]: d for d in pairing_store.list_devices(app.PAIRING_FILE)}
+    assert rows[solo]["parent_device_id"] is None
+    assert rows[child]["parent_device_id"] == parent
+
+    def _create(token, persona="no-nonsense-mentor"):
+        return client.post(
+            "/api/conversations",
+            data=json.dumps({"persona": persona}),
+            content_type="application/json",
+            environ_overrides=LAN_ENV,
+            headers=_lan_headers(token),
+        ).get_json()["id"]
+
+    conv_child = _create(child)
+    conv_stranger = _create(stranger)
+    conv_parent = _create(parent)
+    _add_chat_message(app, conv_child, "child-only-secret-phrase")
+    _add_chat_message(app, conv_stranger, "stranger-only-secret-phrase")
+    _add_chat_message(app, conv_parent, "parent-own-phrase")
+
+    children = client.get(
+        "/api/devices", environ_overrides=LAN_ENV, headers=_lan_headers(parent)
+    ).get_json()
+    assert children == [{"id": rows[child]["id"], "name": "Child phone"}]
+    assert child not in json.dumps(children)
+
+    mirror = client.get(
+        f"/api/devices/{rows[child]['id']}/mirror",
+        environ_overrides=LAN_ENV,
+        headers=_lan_headers(parent),
+    )
+    assert mirror.status_code == 200
+    payload = mirror.get_json()
+    texts = [
+        m["content"]
+        for c in payload["conversations"]
+        for m in c["messages"]
+    ]
+    assert texts == ["child-only-secret-phrase"]
+    assert {c["id"] for c in payload["conversations"]} == {conv_child}
+    mirror_text = json.dumps(payload)
+    assert "stranger-only-secret-phrase" not in mirror_text
+    assert child not in mirror_text
+    assert stranger not in mirror_text
+
+    # The ordinary conversation API stays owner-scoped.
+    parent_list = client.get(
+        "/api/conversations", environ_overrides=LAN_ENV, headers=_lan_headers(parent)
+    ).get_json()
+    assert {c["id"] for c in parent_list} == {conv_parent}
+    assert client.get(
+        f"/api/conversations/{conv_child}",
+        environ_overrides=LAN_ENV,
+        headers=_lan_headers(parent),
+    ).status_code == 404
+
+    def _mirror(token, device_id):
+        return client.get(
+            f"/api/devices/{device_id}/mirror",
+            environ_overrides=LAN_ENV,
+            headers=_lan_headers(token),
+        )
+
+    guessed = _mirror(parent, rows[stranger]["id"])
+    made_up = _mirror(parent, "deadbeefdeadbeefdeadbeefdeadbeef")
+    assert guessed.status_code == 404
+    assert made_up.status_code == 404
+    assert guessed.get_json() == made_up.get_json() == {"error": "device not found"}
+    assert "stranger-only-secret-phrase" not in guessed.get_data(as_text=True)
+    assert "child-only-secret-phrase" not in guessed.get_data(as_text=True)
+
+    # The child learns nothing about being mirrored and cannot read upward.
+    child_devices = client.get(
+        "/api/devices", environ_overrides=LAN_ENV, headers=_lan_headers(child)
+    ).get_json()
+    assert child_devices == []
+    assert _mirror(child, rows[parent]["id"]).status_code == 404
+    assert _mirror(child, rows[child]["id"]).status_code == 404
+    child_list = client.get(
+        "/api/conversations", environ_overrides=LAN_ENV, headers=_lan_headers(child)
+    ).get_json()
+    assert {c["id"] for c in child_list} == {conv_child}
+
+    # The desktop may watch a linked child. An independent device stays closed.
+    admin_mirror = client.get(f"/api/devices/{rows[child]['id']}/mirror")
+    assert admin_mirror.status_code == 200
+    assert "child-only-secret-phrase" in admin_mirror.get_data(as_text=True)
+    assert client.get(f"/api/devices/{rows[solo]['id']}/mirror").status_code == 404
+
+    # Two devices with no parent link still cannot see each other.
+    assert _mirror(stranger, rows[solo]["id"]).status_code == 404
+    assert _mirror(solo, rows[stranger]["id"]).status_code == 404
+    stranger_list = client.get(
+        "/api/conversations", environ_overrides=LAN_ENV, headers=_lan_headers(stranger)
+    ).get_json()
+    solo_list = client.get(
+        "/api/conversations", environ_overrides=LAN_ENV, headers=_lan_headers(solo)
+    ).get_json()
+    assert {c["id"] for c in stranger_list} == {conv_stranger}
+    assert solo_list == []
+
+
 def test_two_devices_do_not_see_each_others_conversations(client, app):
     token_a = _pair_device(app, "Phone A")
     token_b = _pair_device(app, "Phone B")

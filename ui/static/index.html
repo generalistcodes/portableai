@@ -20,7 +20,7 @@
   })();
 </script>
 <link rel="icon" type="image/png" href="logo.png?v=badge-1">
-<link rel="stylesheet" href="style.css?v=ollama-unavail-1">
+<link rel="stylesheet" href="style.css?v=device-activity-2">
 </head>
 <body>
 <div class="app">
@@ -67,6 +67,12 @@
       <div id="conversationList" class="conversation-list"><!-- populated by app.js --></div>
     </div>
 
+    <div id="childDevicesSection" class="sidebar-section child-devices-section mirrored-chats-section hidden">
+      <div class="sidebar-label">Mirrored chats</div>
+      <p class="muted small mirrored-chats-hint">Live view of a linked child. Updates every few seconds while this view is open.</p>
+      <div id="childDevicesList" class="child-devices-list"></div>
+    </div>
+
     <div class="sidebar-footer">
       <button id="statusPill" class="status-pill status-unknown">
         <span class="dot"></span><span id="statusText">checking Ollama…</span>
@@ -107,6 +113,10 @@
       </select>
     </div>
     <div id="pairingConnectedBanner" class="pairing-connected-banner hidden" role="status" aria-live="polite"></div>
+    <div id="mirrorBanner" class="mirror-banner hidden" role="status" aria-live="polite">
+      <span id="mirrorBannerText">Mirroring</span>
+      <button id="stopMirrorBtn" type="button">Stop</button>
+    </div>
     <div id="ollamaUnavailableBanner" class="ollama-unavailable-banner hidden" hidden role="status" aria-live="polite">
       <p id="ollamaUnavailableReason"></p>
       <a id="ollamaInstallLink" class="ollama-install-link hidden" hidden href="https://ollama.com/download" target="_blank" rel="noopener">Download Ollama</a>
@@ -210,7 +220,7 @@
 
       <div class="settings-nav-group">
         <div class="settings-nav-group-label">Connect</div>
-        <button type="button" class="settings-nav-item" data-pane="pairing" data-search="phone pairing pin lan device ios qr family password">
+        <button type="button" class="settings-nav-item" data-pane="pairing" data-search="phone pairing pin lan device ios qr family password child parent mirror">
           <svg class="settings-nav-icon" viewBox="0 0 24 24" aria-hidden="true">
             <rect x="7" y="2" width="10" height="20" rx="2"/>
             <path d="M11 18h2"/>
@@ -424,6 +434,21 @@
               hotspot is running, then click "New PIN" to retry.
             </div>
           </div>
+          <div class="setting-item setting-item-stack pair-link-block">
+            <div class="setting-item-info">
+              <div class="setting-item-name">Next device</div>
+              <div class="setting-item-description">Applies only to the next phone that pairs, and only from this computer. The phone cannot choose a parent, and an already-paired device stays independent.</div>
+            </div>
+            <label class="pair-link-option">
+              <input type="radio" name="pairLinkMode" value="independent" checked>
+              Pair as independent device
+            </label>
+            <label class="pair-link-option">
+              <input class="pair-link-child" type="radio" name="pairLinkMode" value="child">
+              Pair as child of
+            </label>
+            <select class="setting-input setting-input-full pair-parent-select" aria-label="Parent device"></select>
+          </div>
           <div class="setting-item setting-item-stack">
             <div class="setting-item-info">
               <div class="setting-item-name">Family password</div>
@@ -506,6 +531,18 @@
           <button id="connectRegeneratePinBtn" class="primary-btn" type="button">New PIN</button>
         </div>
       </div>
+      <div class="pair-link-block connect-pair-link">
+        <p class="muted small">The next phone that pairs:</p>
+        <label class="pair-link-option">
+          <input type="radio" name="connectPairLinkMode" value="independent" checked>
+          Pair as independent device
+        </label>
+        <label class="pair-link-option">
+          <input class="pair-link-child" type="radio" name="connectPairLinkMode" value="child">
+          Pair as child of
+        </label>
+        <select class="setting-input setting-input-full pair-parent-select" aria-label="Parent device"></select>
+      </div>
       <div id="connectLanIpWarning" class="lan-ip-warning hidden">
         Could not detect a LAN address on this machine — phones won't be
         able to reach this server. Check that WiFi is connected or a
@@ -540,6 +577,6 @@
   </div>
 </div>
 
-<script src="app.js?v=ollama-unavail-1"></script>
+<script src="app.js?v=device-activity-2"></script>
 </body>
 </html>

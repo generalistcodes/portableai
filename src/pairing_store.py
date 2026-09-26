@@ -38,6 +38,9 @@ def _empty_state() -> dict:
         "devices": {},
         "family_password_hash": None,
         "password_failures": {},
+        # Set only by the localhost admin before the next claim. Applied
+        # once, onto the device created by that claim, then cleared.
+        "pending_parent_device_id": None,
     }
 
 
@@ -52,6 +55,7 @@ def _load(path: Path) -> dict:
     data.setdefault("failed_attempts", 0)
     data.setdefault("family_password_hash", None)
     data.setdefault("password_failures", {})
+    data.setdefault("pending_parent_device_id", None)
     return data
 
 
@@ -127,10 +131,75 @@ def claim_pin(path: Path, submitted_pin: str, device_name: str, max_attempts: in
         return token
 
 
+def _ensure_device_shape(data: dict) -> bool:
+    """Give every device a public id and an explicit parent field.
+
+    ``id`` is not the auth token. Mirror URLs use it so a parent never
+    receives the child's Bearer secret. ``parent_device_id`` is the
+    parent's auth token, or None for an independent device. Missing
+    keys on older pairing files are filled in once and persisted.
+    """
+    changed = False
+    if "pending_parent_device_id" not in data:
+        data["pending_parent_device_id"] = None
+        changed = True
+    for info in data.get("devices", {}).values():
+        if not isinstance(info, dict):
+            continue
+        if "parent_device_id" not in info:
+            info["parent_device_id"] = None
+            changed = True
+        if not info.get("id"):
+            info["id"] = secrets.token_hex(16)
+            changed = True
+    return changed
+
+
+def _consume_pending_parent(data: dict) -> str | None:
+    """Parent token chosen by the admin for this claim, then forget it.
+
+    A pending value that no longer names a paired device is dropped
+    rather than stored, so a revoked parent cannot linger onto a
+    later claim.
+    """
+    pending = data.get("pending_parent_device_id") or None
+    data["pending_parent_device_id"] = None
+    if pending and pending in data.get("devices", {}):
+        return pending
+    return None
+
+
 def _issue_device_token(data: dict, device_name: str) -> str:
     token = secrets.token_hex(16)
-    data["devices"][token] = {"name": device_name or "Unnamed device", "paired_at": time.time()}
+    data["devices"][token] = {
+        "id": secrets.token_hex(16),
+        "name": device_name or "Unnamed device",
+        "paired_at": time.time(),
+        "parent_device_id": _consume_pending_parent(data),
+    }
     return token
+
+
+def set_pending_parent(path: Path, parent_token: str | None) -> None:
+    """Remember which already-paired device will parent the next claim.
+
+    ``None`` means the next device pairs as independent. This does not
+    rewrite any device that already exists.
+    """
+    with _lock:
+        data = _load(path)
+        _ensure_device_shape(data)
+        if parent_token:
+            if parent_token not in data.get("devices", {}):
+                raise ValueError("unknown parent device")
+            data["pending_parent_device_id"] = parent_token
+        else:
+            data["pending_parent_device_id"] = None
+        _save(path, data)
+
+
+def get_pending_parent(path: Path) -> str | None:
+    return _load(path).get("pending_parent_device_id") or None
 
 
 def _hash_family_password(password: str) -> str:
@@ -216,9 +285,95 @@ def is_valid_token(path: Path, token: str) -> bool:
     return token in data.get("devices", {})
 
 
+# Skip rewriting pairing.json when a device is polling faster than this.
+LAST_SEEN_MIN_INTERVAL = 60
+
+
+def touch_last_seen(path: Path, token: str, now: float | None = None) -> None:
+    """Record a successful authenticated request from this device.
+
+    No-op for unknown tokens. Writes at most once per LAST_SEEN_MIN_INTERVAL
+    so a polling client does not rewrite the file on every call.
+    """
+    if not token:
+        return
+    clock = time.time() if now is None else now
+    with _lock:
+        data = _load(path)
+        info = data.get("devices", {}).get(token)
+        if not isinstance(info, dict):
+            return
+        previous = float(info.get("last_seen") or 0)
+        if previous and clock - previous < LAST_SEEN_MIN_INTERVAL:
+            return
+        info["last_seen"] = clock
+        _save(path, data)
+
+
 def list_devices(path: Path) -> list[dict]:
-    data = _load(path)
-    return [{"token": t, **info} for t, info in data.get("devices", {}).items()]
+    with _lock:
+        data = _load(path)
+        if _ensure_device_shape(data):
+            _save(path, data)
+        rows = [{"token": t, **info} for t, info in data.get("devices", {}).items() if isinstance(info, dict)]
+    rows.sort(key=lambda row: (float(row.get("last_seen") or 0), float(row.get("paired_at") or 0)), reverse=True)
+    return rows
+
+
+def list_children(path: Path, parent_token: str) -> list[dict]:
+    """Public id and name of devices this token parents. No auth tokens."""
+    if not parent_token:
+        return []
+    children = []
+    for info in list_devices(path):
+        if info.get("parent_device_id") == parent_token:
+            children.append({
+                "id": info["id"],
+                "name": info.get("name") or "Unnamed device",
+            })
+    return children
+
+
+def child_for_parent(path: Path, public_id: str, parent_token: str) -> dict | None:
+    """The child record iff ``parent_token`` is the stored parent.
+
+    Unknown ids and ids that belong to someone else both return None,
+    so a caller cannot tell those cases apart.
+    """
+    if not public_id or not parent_token:
+        return None
+    for info in list_devices(path):
+        if info.get("id") != public_id:
+            continue
+        if info.get("parent_device_id") != parent_token:
+            return None
+        return {
+            "id": info["id"],
+            "name": info.get("name") or "Unnamed device",
+            "token": info["token"],
+        }
+    return None
+
+
+def linked_child(path: Path, public_id: str) -> dict | None:
+    """A device that already has a parent, by public id.
+
+    Independent devices and unknown ids return None. Used by the desktop
+    to open a child's mirror; it does not grant that access to other phones.
+    """
+    if not public_id:
+        return None
+    for info in list_devices(path):
+        if info.get("id") != public_id:
+            continue
+        if not info.get("parent_device_id"):
+            return None
+        return {
+            "id": info["id"],
+            "name": info.get("name") or "Unnamed device",
+            "token": info["token"],
+        }
+    return None
 
 
 def revoke_device(path: Path, token: str) -> bool:

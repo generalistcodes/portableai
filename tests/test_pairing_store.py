@@ -1,6 +1,8 @@
 import json
 import sys
 import time
+
+import pytest
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -280,6 +282,108 @@ def test_clearing_family_password_stops_claims(tmp_path):
     assert store.family_password_is_set(path) is False
     result = store.claim_family_password(path, "family-secret", "Phone", "192.168.1.50")
     assert result["status"] == "invalid"
+
+
+def test_claim_without_pending_parent_is_independent(tmp_path):
+    path = tmp_path / "pairing.json"
+    pin = store.generate_pin(path)
+    token = store.claim_pin(path, pin, "Solo")
+    device = store.list_devices(path)[0]
+    assert device["token"] == token
+    assert device["parent_device_id"] is None
+    assert device["id"] and device["id"] != token
+
+
+def test_pending_parent_is_applied_once_at_claim(tmp_path):
+    path = tmp_path / "pairing.json"
+    parent = store.claim_pin(path, store.generate_pin(path), "Parent")
+    store.set_pending_parent(path, parent)
+    assert store.get_pending_parent(path) == parent
+    child = store.claim_pin(path, store.generate_pin(path), "Child")
+    assert store.get_pending_parent(path) is None
+    rows = {d["token"]: d for d in store.list_devices(path)}
+    assert rows[child]["parent_device_id"] == parent
+    assert rows[parent]["parent_device_id"] is None
+    # A later claim does not inherit the spent link.
+    later = store.claim_pin(path, store.generate_pin(path), "Later")
+    rows = {d["token"]: d for d in store.list_devices(path)}
+    assert rows[later]["parent_device_id"] is None
+    assert rows[parent]["parent_device_id"] is None
+
+
+def test_set_pending_parent_does_not_rewrite_existing_devices(tmp_path):
+    path = tmp_path / "pairing.json"
+    parent = store.claim_pin(path, store.generate_pin(path), "Parent")
+    already = store.claim_pin(path, store.generate_pin(path), "Already paired")
+    store.set_pending_parent(path, parent)
+    rows = {d["token"]: d for d in store.list_devices(path)}
+    assert rows[already]["parent_device_id"] is None
+    assert rows[parent]["parent_device_id"] is None
+
+
+def test_set_pending_parent_rejects_unknown_token(tmp_path):
+    path = tmp_path / "pairing.json"
+    store.generate_pin(path)
+    with pytest.raises(ValueError):
+        store.set_pending_parent(path, "not-a-device")
+    assert store.get_pending_parent(path) is None
+
+
+def test_list_children_and_mirror_lookup_follow_the_stored_parent(tmp_path):
+    path = tmp_path / "pairing.json"
+    parent = store.claim_pin(path, store.generate_pin(path), "Parent")
+    stranger = store.claim_pin(path, store.generate_pin(path), "Stranger")
+    store.set_pending_parent(path, parent)
+    child = store.claim_pin(path, store.generate_pin(path), "Child")
+    rows = {d["token"]: d for d in store.list_devices(path)}
+    children = store.list_children(path, parent)
+    assert children == [{"id": rows[child]["id"], "name": "Child"}]
+    assert "token" not in children[0]
+    assert store.list_children(path, child) == []
+    assert store.list_children(path, stranger) == []
+    found = store.child_for_parent(path, rows[child]["id"], parent)
+    assert found["token"] == child
+    assert store.child_for_parent(path, rows[child]["id"], stranger) is None
+    assert store.child_for_parent(path, rows[child]["id"], child) is None
+    assert store.child_for_parent(path, rows[stranger]["id"], parent) is None
+    assert store.child_for_parent(path, "not-an-id", parent) is None
+
+
+def test_family_password_claim_consumes_pending_parent(tmp_path):
+    path = tmp_path / "pairing.json"
+    parent = store.claim_pin(path, store.generate_pin(path), "Parent")
+    store.set_family_password(path, "family-secret")
+    store.set_pending_parent(path, parent)
+    result = store.claim_family_password(path, "family-secret", "Child", "192.168.1.50")
+    assert result["status"] == "ok"
+    rows = {d["token"]: d for d in store.list_devices(path)}
+    assert rows[result["token"]]["parent_device_id"] == parent
+    assert store.get_pending_parent(path) is None
+
+
+def test_last_seen_sorts_recent_activity_first(tmp_path):
+    path = tmp_path / "pairing.json"
+    older = store.claim_pin(path, store.generate_pin(path), "Older")
+    newer = store.claim_pin(path, store.generate_pin(path), "Newer")
+    store.touch_last_seen(path, older, now=1_000)
+    store.touch_last_seen(path, newer, now=2_000)
+    store.touch_last_seen(path, newer, now=2_030)
+    rows = store.list_devices(path)
+    assert [row["name"] for row in rows] == ["Newer", "Older"]
+    assert rows[0]["last_seen"] == 2_000
+    store.touch_last_seen(path, "not-a-device", now=9_000)
+    assert store.list_devices(path)[0]["last_seen"] == 2_000
+
+
+def test_linked_child_requires_a_parent(tmp_path):
+    path = tmp_path / "pairing.json"
+    parent = store.claim_pin(path, store.generate_pin(path), "Parent")
+    store.set_pending_parent(path, parent)
+    child = store.claim_pin(path, store.generate_pin(path), "Child")
+    rows = {d["token"]: d for d in store.list_devices(path)}
+    assert store.linked_child(path, rows[child]["id"])["token"] == child
+    assert store.linked_child(path, rows[parent]["id"]) is None
+    assert store.linked_child(path, "missing") is None
 
 
 def test_family_password_is_hashed_on_disk(tmp_path):

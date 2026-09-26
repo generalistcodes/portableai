@@ -51,6 +51,13 @@ LAN-open. Desktop (loopback) is treated as admin for data ownership:
 `owner_id` `"local"`, `is_admin` true. A paired phone’s `owner_id` is
 its device token; it only sees its own conversations.
 
+A paired device may also read chats of devices whose stored
+`parent_device_id` is that device’s token, and only through
+`GET /api/devices` and `GET /api/devices/<id>/mirror`. The link is
+checked on every request against pairing state. Loopback does not
+bypass that check. It does not widen `GET /api/conversations` or any
+other conversation route.
+
 ---
 
 ## `GET /api/personas`
@@ -294,7 +301,8 @@ when `downloading_ollama` has received no new bytes for 60 seconds;
   "lan_ip_detected": true,
   "lan_url": "http://192.168.1.134:5050",
   "pairing_uri": "portableai://pair?ip=192.168.1.134&port=5050&pin=123456&name=hostname&exp=1732650300",
-  "pairing_web_url": "http://192.168.1.134:5050/?pair_pin=123456&exp=1732650300"
+  "pairing_web_url": "http://192.168.1.134:5050/?pair_pin=123456&exp=1732650300",
+  "pending_parent_device_id": null
 }
 ```
 
@@ -307,6 +315,7 @@ when `downloading_ollama` has received no new bytes for 60 seconds;
 | `lan_url` | string | `http://{lan_ip}:{PORT}` with module constant `PORT` (**5050**), not necessarily the `--port` the process was started with. |
 | `pairing_uri` | string | `portableai://pair?...` query keys: `ip`, `port`, `pin`, `name` (hostname), `exp` (int). Reserved for a native handler; the QR does **not** encode this. |
 | `pairing_web_url` | string | What the QR encodes. Query keys: `pair_pin`, `exp`. |
+| `pending_parent_device_id` | string or null | Parent auth token the admin chose for the **next** claim. `null` means that device will be independent. Set only via `POST /api/pairing/link`. |
 
 If no PIN is stored or it has expired, the server generates one first.
 
@@ -349,8 +358,13 @@ required:
 | `pin` | one of `pin` / `family_password` | Non-empty after strip uses the PIN path (existing behavior). |
 | `family_password` | one of `pin` / `family_password` | Used only when `pin` is omitted/empty. Does not expire, not single-use. |
 | `device_name` | no | Empty/omitted stores as `"Unnamed device"`. |
+| `parent_device_id` | forbidden from a phone | A non-localhost claim that includes this field is **403** `{"error": "parent_device_id can only be set from the server machine"}` and does not consume the PIN or password. Loopback ignores the field; the admin sets the next parent with `POST /api/pairing/link`. |
 
 If both `pin` and `family_password` are sent, **PIN wins**.
+
+A successful claim copies `pending_parent_device_id` onto the new device
+and clears it. The next claim is independent unless the admin sets the
+link again. Already-paired devices are not updated.
 
 **Success (200):**
 
@@ -378,6 +392,36 @@ This counter is **not** shared with the PIN lockout.
 Store `device_token` and send it as `Authorization: Bearer …` on every
 requires-token call. The PIN is single-use. The family password is not.
 
+The success body is only `device_token`. It does not say whether the
+new device is a child.
+
+### `POST /api/pairing/link`
+
+**Auth:** admin-only
+
+Sets the parent for the **next** claim. Does not change devices that
+already exist.
+
+**Request:**
+
+```json
+{ "parent_device_id": "<existing device token>" }
+```
+
+`null` or `""` clears the pending link (next device is independent).
+
+**Success (200):** `{"parent_device_id": "<token>"}` or
+`{"parent_device_id": null}`
+
+**400** `{"error": "parent_device_id is required"}` — field omitted.
+
+**400** `{"error": "parent_device_id must be a string or null"}`
+
+**400** `{"error": "unknown parent device"}` — token is not an
+already-paired device.
+
+A paired phone, even with a valid token, gets **403**.
+
 ### `GET /api/pairing/devices`
 
 **Auth:** admin-only (prefix `/api/pairing/devices`)
@@ -386,9 +430,61 @@ requires-token call. The PIN is single-use. The family password is not.
 
 ```json
 [
-  { "token": "<device_token>", "name": "Jane’s iPhone", "paired_at": 1732650000.0 }
+  {
+    "token": "<device_token>",
+    "id": "<public id>",
+    "name": "Jane’s iPhone",
+    "paired_at": 1732650000.0,
+    "parent_device_id": null,
+    "last_seen": null
+  }
 ]
 ```
+
+`id` is a public id (not the auth token). `parent_device_id` is the
+parent’s auth token, or `null` when the device is independent.
+`last_seen` is the unix time of that device’s last successful
+authenticated request, or `null` if it has not made one since this
+field existed. The list is ordered by `last_seen` descending, then
+`paired_at`. This list is admin-only; phones do not receive it.
+
+### `GET /api/devices`
+
+**Auth:** requires-token
+
+**Success (200):** JSON array of this caller’s children only — devices
+whose stored `parent_device_id` equals the Bearer token:
+
+```json
+[{ "id": "<public id>", "name": "Kid’s iPhone" }]
+```
+
+No auth tokens. A caller with no children, including loopback with no
+Bearer token, gets `[]`. A child does not see its own parent here.
+
+### `GET /api/devices/<id>/mirror`
+
+**Auth:** requires-token for a phone: the Bearer token must be the
+child’s stored `parent_device_id`. Loopback may open this for a device
+that already has a parent (the desktop already sees every chat). An
+independent device is still **404** from loopback.
+
+**Success (200):**
+
+```json
+{
+  "id": "<public id>",
+  "name": "Kid’s iPhone",
+  "conversations": []
+}
+```
+
+Each conversation is an active (not archived) row for that child, plus
+its `messages`. Rows are loaded with `owner_id` fixed to the child’s
+token. The child’s auth token is not included.
+
+**404** `{"error": "device not found"}` — unknown id, a device you do
+not parent, or no Bearer token. Those cases use the same body.
 
 ### `DELETE /api/pairing/devices/<token>`
 
@@ -906,8 +1002,11 @@ Missing log file → `[]`.
 | GET | `/api/pairing/qr.svg` | admin-only |
 | POST | `/api/pairing/pin/regenerate` | admin-only |
 | POST | `/api/pairing/claim` | LAN-open |
+| POST | `/api/pairing/link` | admin-only |
 | GET | `/api/pairing/devices` | admin-only |
 | DELETE | `/api/pairing/devices/<token>` | admin-only |
+| GET | `/api/devices` | requires-token |
+| GET | `/api/devices/<id>/mirror` | requires-token |
 | GET | `/api/models` | requires-token |
 | GET | `/api/models/catalog` | admin-only |
 | POST | `/api/models/pull` | admin-only |

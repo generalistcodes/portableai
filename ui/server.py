@@ -242,6 +242,7 @@ _ADMIN_ONLY_PATHS = {
     "/api/pairing/pin",
     "/api/pairing/pin/regenerate",
     "/api/pairing/qr.svg",
+    "/api/pairing/link",
     "/api/logs",
     "/api/settings",
     "/api/models/pull",
@@ -321,6 +322,7 @@ def _check_auth():
     auth_header = request.headers.get("Authorization", "")
     token = auth_header[len("Bearer "):] if auth_header.startswith("Bearer ") else ""
     if pairing_store.is_valid_token(PAIRING_FILE, token):
+        pairing_store.touch_last_seen(PAIRING_FILE, token)
         return None
 
     return jsonify({"error": "pairing required"}), 401
@@ -599,6 +601,7 @@ def api_pairing_pin():
     current["lan_url"] = f"http://{lan['ip']}:{listen_port()}"
     current["pairing_uri"] = _build_pairing_uri(lan["ip"], listen_port(), current["pin"], current["expires_at"])
     current["pairing_web_url"] = _build_pairing_web_url(lan["ip"], listen_port(), current["pin"], current["expires_at"])
+    current["pending_parent_device_id"] = pairing_store.get_pending_parent(PAIRING_FILE)
     return jsonify(current)
 
 
@@ -640,6 +643,13 @@ def api_pairing_claim():
         family_password = str(family_password)
     family_password = family_password.strip()
     device_name = (body.get("device_name") or "").strip()
+    # The joining device never chooses its parent. A non-localhost claim
+    # that tries to send parent_device_id is rejected before the PIN or
+    # password is checked, so the attempt does not pair and does not
+    # consume the PIN. Localhost uses POST /api/pairing/link instead;
+    # a parent field on this body is ignored even from loopback.
+    if "parent_device_id" in body and not _is_local_client():
+        return jsonify({"error": "parent_device_id can only be set from the server machine"}), 403
     if pin:
         token = pairing_store.claim_pin(PAIRING_FILE, pin, device_name)
         if not token:
@@ -660,9 +670,71 @@ def api_pairing_claim():
     return jsonify({"error": "pin or family_password is required"}), 400
 
 
+@app.route("/api/pairing/link", methods=["POST"])
+def api_pairing_link():
+    """Admin chooses the parent for the next claim. Does not rewrite
+    devices that are already paired."""
+    body = request.get_json(force=True) or {}
+    if "parent_device_id" not in body:
+        return jsonify({"error": "parent_device_id is required"}), 400
+    raw = body.get("parent_device_id")
+    if raw is None:
+        parent = None
+    elif not isinstance(raw, str):
+        return jsonify({"error": "parent_device_id must be a string or null"}), 400
+    else:
+        parent = raw.strip() or None
+    try:
+        pairing_store.set_pending_parent(PAIRING_FILE, parent)
+    except ValueError:
+        return jsonify({"error": "unknown parent device"}), 400
+    return jsonify({"parent_device_id": pairing_store.get_pending_parent(PAIRING_FILE)})
+
+
 @app.route("/api/pairing/devices", methods=["GET"])
 def api_pairing_devices():
     return jsonify(pairing_store.list_devices(PAIRING_FILE))
+
+
+def _bearer_token() -> str:
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return auth_header[len("Bearer "):]
+    return ""
+
+
+@app.route("/api/devices", methods=["GET"])
+def api_list_child_devices():
+    """Children of the calling device only. Loopback is not a parent
+    unless it also presents that parent's token."""
+    return jsonify(pairing_store.list_children(PAIRING_FILE, _bearer_token()))
+
+
+@app.route("/api/devices/<device_id>/mirror", methods=["GET"])
+def api_mirror_device(device_id):
+    """Child conversations for the stored parent, checked every request.
+
+    A phone only gets a hit when its token equals that child's
+    parent_device_id. The desktop (loopback) may open the same view for
+    a device that already has a parent — the laptop already administers
+    every chat. An independent device, an unknown id, and any other
+    phone all get the same 404.
+    """
+    child = pairing_store.child_for_parent(PAIRING_FILE, device_id, _bearer_token())
+    if child is None and _is_local_client():
+        child = pairing_store.linked_child(PAIRING_FILE, device_id)
+    if child is None:
+        return jsonify({"error": "device not found"}), 404
+    conn = _db()
+    try:
+        conversations = store.list_owned_conversations_with_messages(conn, child["token"])
+    finally:
+        conn.close()
+    return jsonify({
+        "id": child["id"],
+        "name": child["name"],
+        "conversations": conversations,
+    })
 
 
 @app.route("/api/pairing/devices/<token>", methods=["DELETE"])
