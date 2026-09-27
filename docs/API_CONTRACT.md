@@ -888,34 +888,39 @@ else **400** `{"error": "title is required"}`.
 | `model_override` | no | Falsy/omitted → persona’s own `FROM`. If set, Ollama model name is `{persona}--{slug(override)}` (e.g. `no-nonsense-mentor--qwen2.5-0.5b`). |
 | `conversation_id` | no | Continue an existing chat. Omitted/null creates a new conversation owned by the caller. |
 
-**Success (200):**
+**Success (200):** `Content-Type: application/x-ndjson`. Newline-delimited
+JSON. Zero or more token lines, then one final object. The UI appends
+each token as it arrives.
 
-```json
-{
-  "reply": "…",
-  "latency_ms": 842,
-  "model_used": "assistant",
-  "conversation_id": "uuid"
-}
-```
+| Event | Shape |
+| --- | --- |
+| token (0+) | `{"token":"…"}` — one content delta, not the reply so far |
+| done (final) | `{"done":true,"reply":"…","latency_ms":842,"model_used":"assistant","conversation_id":"uuid"}` |
 
-`model_used` is the Ollama model name actually chatted against (persona
-id, or the `--` variant). `latency_ms` is an integer millisecond count.
+`reply` is the concatenation of every `token`. `model_used` is the
+Ollama model name actually chatted against (persona id, or the `--`
+variant). `latency_ms` is an integer millisecond count for the full
+generation. The user and assistant messages are stored only when `done`
+is emitted.
 
 **404** `{"error": "conversation not found"}` if `conversation_id` is
-unknown or not owned by the caller.
+unknown or not owned by the caller. Plain JSON, before any stream.
 
 **503** `{"error": "<ollama_reason>"}` — same sentence as
-`GET /api/status` when Ollama is down.
+`GET /api/status` when Ollama is down. Plain JSON.
 
 **500** `{"error": "could not build persona '<id>': …"}` if the
-Modelfile is missing or `create` fails with `OllamaError`.
+Modelfile is missing or `create` fails with `OllamaError`. Plain JSON.
 
-**502** `{"error": "<message>"}` for connection/timeout/truncated JSON
-while building or chatting (`"Lost connection to Ollama mid-request."`
-or the incomplete-response string from `ollama_client`).
+**502** `{"error": "<message>"}` when Ollama fails **before the first
+token** (connection, timeout, or truncated JSON:
+`"Lost connection to Ollama mid-request."` or the incomplete-response
+string from `ollama_client`). Plain JSON; nothing is stored.
 
-The call is **not** streaming. The UI waits for this full JSON object.
+If tokens have already been sent and Ollama then fails, the status stays
+**200** and the stream ends with `{"error":"<message>"}` instead of
+`done`. Nothing is stored. The client discards the partial text and
+shows that error.
 
 ### `POST /api/chat/reference`
 

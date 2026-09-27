@@ -69,29 +69,59 @@ def test_create_model_raises_on_error_status(mock_post):
         client.create_model({"model": "x", "from": "llama3.2:3b"})
 
 
+def _stream_response(lines, status_code=200, text=""):
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.text = text
+    resp.iter_lines.return_value = lines
+    return resp
+
+
 @patch("ollama_client.requests.post")
 def test_chat_extracts_message_content(mock_post):
-    mock_post.return_value = _mock_response(
-        200, {"message": {"role": "assistant", "content": "hello there"}}
-    )
+    mock_post.return_value = _stream_response([
+        '{"message":{"role":"assistant","content":"hello "},"done":false}',
+        '{"message":{"role":"assistant","content":"there"},"done":true}',
+    ])
     client = OllamaClient()
     reply = client.chat("mentor", [{"role": "user", "content": "hi"}])
     assert reply == "hello there"
+    _, kwargs = mock_post.call_args
+    assert kwargs["json"]["stream"] is True
+    assert kwargs["json"]["keep_alive"] == "30m"
+    assert kwargs["stream"] is True
+
+
+@patch("ollama_client.requests.post")
+def test_iter_chat_yields_each_token(mock_post):
+    mock_post.return_value = _stream_response([
+        '{"message":{"content":"hello "},"done":false}',
+        '{"message":{"content":"there"},"done":true}',
+    ])
+    client = OllamaClient()
+    assert list(client.iter_chat("mentor", [{"role": "user", "content": "hi"}])) == [
+        "hello ",
+        "there",
+    ]
 
 
 @patch("ollama_client.requests.post")
 def test_chat_passes_options_through(mock_post):
-    mock_post.return_value = _mock_response(200, {"message": {"content": "ok"}})
+    mock_post.return_value = _stream_response([
+        '{"message":{"content":"ok"},"done":true}',
+    ])
     client = OllamaClient()
     client.chat("mentor", [{"role": "user", "content": "hi"}], options={"temperature": 0})
 
     _, kwargs = mock_post.call_args
     assert kwargs["json"]["options"] == {"temperature": 0}
+    assert kwargs["json"]["stream"] is True
+    assert kwargs["json"]["keep_alive"] == "30m"
 
 
 @patch("ollama_client.requests.post")
 def test_chat_raises_on_unexpected_shape(mock_post):
-    mock_post.return_value = _mock_response(200, {"unexpected": "shape"})
+    mock_post.return_value = _stream_response(['{"unexpected": "shape"}'])
     client = OllamaClient()
     with pytest.raises(OllamaError, match="unexpected"):
         client.chat("mentor", [{"role": "user", "content": "hi"}])
@@ -99,15 +129,9 @@ def test_chat_raises_on_unexpected_shape(mock_post):
 
 @patch("ollama_client.requests.post")
 def test_chat_raises_on_truncated_json(mock_post):
-    import json as json_lib
-
     from ollama_client import INCOMPLETE_RESPONSE_MESSAGE
 
-    resp = _mock_response(200, text='{"message": {"content": "hel')
-    resp.json.side_effect = json_lib.JSONDecodeError(
-        "Expecting value", '{"message": {"content": "hel', 12
-    )
-    mock_post.return_value = resp
+    mock_post.return_value = _stream_response(['{"message": {"content": "hel'])
     client = OllamaClient()
     with pytest.raises(OllamaError, match="incomplete or invalid") as exc_info:
         client.chat("mentor", [{"role": "user", "content": "hi"}])

@@ -423,8 +423,7 @@ bar — Ollama's `/api/pull` supports streaming progress events; this repo
 keeps `stream=False` per attempt and only surfaces retry status between
 attempts (see `test_pull_model_*` in `tests/test_server.py` /
 `tests/test_ollama_client.py`, all mocked — no multi-GB downloads in CI).
-A progress bar still belongs in the streaming-replies work listed under
-"What's still missing" below.
+A progress bar is still listed under "What's still missing" below.
 
 ### Recommended models
 
@@ -532,11 +531,8 @@ same as before).
 
 Roughly in order of what most affects the demo/blog experience:
 
-1. **Streaming replies** — right now the UI waits for the full response
-   before showing anything (aside from the typing dots). Ollama supports
-   token streaming; this UI intentionally doesn't use it yet to keep the
-   `/api/chat` contract simple to test. The same gap applies to model
-   downloads (no progress bar, see above).
+1. **Download progress bar** — model pulls report retry status, not
+   byte-level progress. See the model-download section above.
 2. **Persona editor in the UI** — personas are still hand-edited
    `.Modelfile` text files; there's no "create a persona" form.
 3. **Copy button on code blocks** — the markdown renderer produces

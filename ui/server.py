@@ -99,6 +99,8 @@ app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024  # 1MB; Flask returns 413 abo
 
 # Ollama mid-request failures that should never become Werkzeug HTML 500s.
 _OLLAMA_CALL_ERRORS = (OllamaError, requests.ConnectionError, requests.Timeout, json.JSONDecodeError)
+# Distinct from an empty token so a reply with no content can still finish.
+_CHAT_STREAM_END = object()
 
 
 def _ollama_error_message(exc: BaseException) -> str:
@@ -1654,10 +1656,36 @@ def api_chat():
         prior = store.get_messages(conn, conversation_id)
         messages = [{"role": m["role"], "content": m["content"]} for m in prior]
         messages.append({"role": "user", "content": message})
+    finally:
+        conn.close()
 
-        started = time.time()
+    started = time.time()
+    try:
+        token_iter = iter(client.iter_chat(actual_model, messages))
+        first_token = next(token_iter, _CHAT_STREAM_END)
+    except _OLLAMA_CALL_ERRORS as e:
+        err_msg = _ollama_error_message(e)
+        _log(
+            {
+                "conversation_id": conversation_id,
+                "persona": persona_name,
+                "model_used": actual_model,
+                "message": message,
+                "error": err_msg,
+            }
+        )
+        return jsonify({"error": err_msg}), 502
+
+    def generate():
+        parts: list[str] = []
         try:
-            reply = client.chat(actual_model, messages)
+            pending = [] if first_token is _CHAT_STREAM_END else [first_token]
+            for token in pending:
+                parts.append(token)
+                yield json.dumps({"token": token}) + "\n"
+            for token in token_iter:
+                parts.append(token)
+                yield json.dumps({"token": token}) + "\n"
         except _OLLAMA_CALL_ERRORS as e:
             err_msg = _ollama_error_message(e)
             _log(
@@ -1669,32 +1697,41 @@ def api_chat():
                     "error": err_msg,
                 }
             )
-            return jsonify({"error": err_msg}), 502
+            yield json.dumps({"error": err_msg}) + "\n"
+            return
+
+        reply = "".join(parts)
         latency_ms = round((time.time() - started) * 1000)
+        save = _db()
+        try:
+            store.add_message(save, conversation_id, "user", message)
+            store.add_message(save, conversation_id, "assistant", reply, latency_ms=latency_ms)
+        finally:
+            save.close()
+        _log(
+            {
+                "conversation_id": conversation_id,
+                "persona": persona_name,
+                "model_used": actual_model,
+                "message": message,
+                "reply": reply,
+                "latency_ms": latency_ms,
+            }
+        )
+        yield json.dumps(
+            {
+                "done": True,
+                "reply": reply,
+                "latency_ms": latency_ms,
+                "model_used": actual_model,
+                "conversation_id": conversation_id,
+            }
+        ) + "\n"
 
-        store.add_message(conn, conversation_id, "user", message)
-        store.add_message(conn, conversation_id, "assistant", reply, latency_ms=latency_ms)
-    finally:
-        conn.close()
-
-    _log(
-        {
-            "conversation_id": conversation_id,
-            "persona": persona_name,
-            "model_used": actual_model,
-            "message": message,
-            "reply": reply,
-            "latency_ms": latency_ms,
-        }
-    )
-    return jsonify(
-        {
-            "reply": reply,
-            "latency_ms": latency_ms,
-            "model_used": actual_model,
-            "conversation_id": conversation_id,
-        }
-    )
+    resp = Response(generate(), mimetype="application/x-ndjson")
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["X-Accel-Buffering"] = "no"
+    return resp
 
 
 @app.route("/api/chat/reference", methods=["POST"])

@@ -1,7 +1,7 @@
 """
 Minimal client for the local Ollama REST API (default: http://localhost:11434).
 
-Deliberately thin: no chat streaming, no auth. Model pulls retry a few
+Deliberately thin: no auth. Chat reads Ollama's token stream. Model pulls retry a few
 times on transient connection/timeout failures (CDN anycast flakes are
 common against ollama.com registry blob URLs). This is a teaching client
 for the blog post, not a production SDK -- Ollama already ships an
@@ -74,19 +74,62 @@ class OllamaClient:
         if resp.status_code != 200:
             raise OllamaError(f"POST /api/create failed: {resp.status_code} {resp.text}")
 
-    def chat(self, model: str, messages: list[dict], options: dict | None = None) -> str:
-        """Send a chat request and return the assistant's reply text."""
-        body = {"model": model, "messages": messages, "stream": False}
+    def iter_chat(
+        self, model: str, messages: list[dict], options: dict | None = None
+    ) -> Iterator[str]:
+        """Yield each assistant content delta as Ollama produces it.
+
+        The request uses ``stream: true``. A non-200 response, an ``error``
+        field, a truncated line, or a body that never reports ``done`` raises
+        ``OllamaError``. Connection and timeout errors propagate as
+        ``requests`` exceptions.
+        """
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            # Ollama unloads a model after 5 idle minutes by default.
+            "keep_alive": "30m",
+        }
         if options:
             body["options"] = options
-        resp = requests.post(self._url("/api/chat"), json=body, timeout=self.timeout)
-        if resp.status_code != 200:
-            raise OllamaError(f"POST /api/chat failed: {resp.status_code} {resp.text}")
-        data = _response_json(resp)
+        resp = requests.post(
+            self._url("/api/chat"), json=body, stream=True, timeout=self.timeout
+        )
         try:
-            return data["message"]["content"]
-        except (KeyError, TypeError) as exc:
-            raise OllamaError(f"unexpected /api/chat response shape: {data!r}") from exc
+            if resp.status_code != 200:
+                raise OllamaError(f"POST /api/chat failed: {resp.status_code} {resp.text}")
+            saw_done = False
+            for raw in resp.iter_lines(decode_unicode=True):
+                if not raw:
+                    continue
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    raise OllamaError(INCOMPLETE_RESPONSE_MESSAGE) from exc
+                if not isinstance(data, dict):
+                    raise OllamaError(f"unexpected /api/chat response shape: {data!r}")
+                err = data.get("error")
+                if err:
+                    raise OllamaError(str(err))
+                content = ((data.get("message") or {}).get("content")) or ""
+                if content:
+                    yield content
+                if data.get("done"):
+                    saw_done = True
+                    return
+            if not saw_done:
+                raise OllamaError("unexpected /api/chat response shape")
+        finally:
+            resp.close()
+
+    def chat(self, model: str, messages: list[dict], options: dict | None = None) -> str:
+        """Send a chat request and return the assistant's full reply text.
+
+        Tokens are read from the stream and joined. Call ``iter_chat`` to
+        receive each token as it arrives.
+        """
+        return "".join(self.iter_chat(model, messages, options=options))
 
     def delete_model(self, name: str) -> None:
         resp = requests.delete(self._url("/api/delete"), json={"model": name}, timeout=self.timeout)

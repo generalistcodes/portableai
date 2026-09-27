@@ -1007,18 +1007,78 @@ function appendTyping() {
   return row;
 }
 
+let chatInFlight = false;
+
+function appendStreamingMessage() {
+  const row = appendMessage("assistant", "");
+  row.classList.add("is-streaming");
+  return row;
+}
+
+function paintStreamingMessage(row, text) {
+  const content = row.querySelector(".bubble-content");
+  content.innerHTML = renderMarkdown(text);
+  const caret = document.createElement("span");
+  caret.className = "stream-caret";
+  caret.setAttribute("aria-hidden", "true");
+  const host = content.lastElementChild || content;
+  host.appendChild(caret);
+  const messages = el("messages");
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function finishStreamingMessage(row, data) {
+  row.classList.remove("is-streaming");
+  const content = row.querySelector(".bubble-content");
+  const reply = data.reply || "";
+  content.innerHTML = renderMarkdown(reply);
+  const bubble = row.querySelector(".bubble");
+  const metaEl = document.createElement("span");
+  metaEl.className = "meta";
+  metaEl.textContent = `${data.model_used} · ${data.latency_ms} ms`;
+  bubble.appendChild(metaEl);
+  if (reply) addCopyButton(bubble, reply);
+  el("messages").scrollTop = el("messages").scrollHeight;
+}
+
+async function readNdjson(resp, onEvent) {
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop() || "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      onEvent(JSON.parse(line));
+    }
+  }
+  if (buf.trim()) onEvent(JSON.parse(buf));
+}
+
 async function sendMessage(text) {
   if (!state.activePersona) {
     appendMessage("error", "Pick a persona first.");
     return;
   }
-  appendMessage("user", text);
-  const typingRow = appendTyping();
+  if (chatInFlight) return;
+  chatInFlight = true;
   el("sendBtn").disabled = true;
+  let typingRow = null;
+  let streamRow = null;
+  let assembled = "";
 
   try {
-    const data = await api("/api/chat", {
+    appendMessage("user", text);
+    typingRow = appendTyping();
+    const headers = { "Content-Type": "application/json" };
+    if (deviceToken) headers.Authorization = `Bearer ${deviceToken}`;
+    const resp = await fetch("/api/chat", {
       method: "POST",
+      headers,
       body: JSON.stringify({
         persona: state.activePersona,
         message: text,
@@ -1026,14 +1086,50 @@ async function sendMessage(text) {
         conversation_id: state.conversationId,
       }),
     });
-    typingRow.remove();
-    appendMessage("assistant", data.reply, `${data.model_used} · ${data.latency_ms} ms`);
-    state.conversationId = data.conversation_id;
+    const contentType = resp.headers.get("content-type") || "";
+    if (!contentType.includes("ndjson")) {
+      const data = await resp.json().catch(() => ({}));
+      if (resp.status === 401) {
+        setDeviceToken(null);
+        showPairingGate(data.error === "pairing required" ? "" : (data.error || ""));
+        const err = new Error(data.error || "Pairing required");
+        err.pairingRequired = true;
+        throw err;
+      }
+      throw new Error(data.error || `request failed: ${resp.status}`);
+    }
+    let finalEvent = null;
+    let streamError = null;
+    await readNdjson(resp, (ev) => {
+      if (ev.error) {
+        streamError = ev.error;
+        return;
+      }
+      if (ev.token) {
+        if (!streamRow) {
+          typingRow.remove();
+          streamRow = appendStreamingMessage();
+        }
+        assembled += ev.token;
+        paintStreamingMessage(streamRow, assembled);
+      }
+      if (ev.done) finalEvent = ev;
+    });
+    if (streamError) throw new Error(streamError);
+    if (!finalEvent) throw new Error("Lost connection to Ollama mid-request.");
+    if (!streamRow) {
+      typingRow.remove();
+      streamRow = appendStreamingMessage();
+    }
+    finishStreamingMessage(streamRow, finalEvent);
+    state.conversationId = finalEvent.conversation_id;
     loadConversations();
   } catch (err) {
-    typingRow.remove();
+    if (streamRow) streamRow.remove();
+    if (typingRow && typingRow.isConnected) typingRow.remove();
     if (!err.pairingRequired) appendMessage("error", err.message);
   } finally {
+    chatInFlight = false;
     el("sendBtn").disabled = false;
   }
 }

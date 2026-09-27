@@ -420,18 +420,37 @@ def test_chat_503_when_ollama_down(mock_cls, client):
     assert resp.status_code == 503
 
 
+def _chat_events(resp):
+    return [json.loads(line) for line in resp.get_data(as_text=True).splitlines() if line.strip()]
+
+
+def _chat_done(resp):
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    assert "ndjson" in resp.content_type
+    events = _chat_events(resp)
+    assert events
+    done = events[-1]
+    assert done.get("done") is True
+    tokens = "".join(ev["token"] for ev in events if "token" in ev)
+    assert tokens == done["reply"]
+    return done
+
+
 @patch("server.OllamaClient")
 def test_chat_happy_path_builds_persona_once_and_logs(mock_cls, client, app):
     instance = mock_cls.return_value
     instance.is_available.return_value = True
-    instance.chat.return_value = "Ship it. Next: write the migration test."
+    instance.iter_chat.return_value = ["Ship it. ", "Next: write the migration test."]
 
     body = json.dumps({"persona": "no-nonsense-mentor", "message": "Should I deploy on Friday?"})
     resp = client.post("/api/chat", data=body, content_type="application/json")
 
-    assert resp.status_code == 200
-    data = resp.get_json()
+    data = _chat_done(resp)
     assert data["reply"] == "Ship it. Next: write the migration test."
+    assert [ev["token"] for ev in _chat_events(resp) if "token" in ev] == [
+        "Ship it. ",
+        "Next: write the migration test.",
+    ]
     conversation_id = data["conversation_id"]
     assert conversation_id
     instance.create_model.assert_called_once()  # persona built exactly once
@@ -441,9 +460,11 @@ def test_chat_happy_path_builds_persona_once_and_logs(mock_cls, client, app):
         {"persona": "no-nonsense-mentor", "message": "And staging?", "conversation_id": conversation_id}
     )
     resp2 = client.post("/api/chat", data=body2, content_type="application/json")
-    assert resp2.status_code == 200
-    assert resp2.get_json()["conversation_id"] == conversation_id
+    assert _chat_done(resp2)["conversation_id"] == conversation_id
     instance.create_model.assert_called_once()
+    second_messages = instance.iter_chat.call_args[0][1]
+    assert [m["role"] for m in second_messages] == ["user", "assistant", "user"]
+    assert second_messages[1]["content"] == "Ship it. Next: write the migration test."
 
     logs = app._read_logs()
     assert len(logs) == 2
@@ -472,7 +493,7 @@ def test_chat_unknown_persona_returns_500(mock_cls, client):
 def test_chat_connection_error_returns_json_502(mock_cls, client):
     instance = mock_cls.return_value
     instance.is_available.return_value = True
-    instance.chat.side_effect = requests.ConnectionError("Connection refused")
+    instance.iter_chat.side_effect = requests.ConnectionError("Connection refused")
     resp = client.post(
         "/api/chat",
         data=json.dumps({"persona": "no-nonsense-mentor", "message": "hi"}),
@@ -487,7 +508,7 @@ def test_chat_connection_error_returns_json_502(mock_cls, client):
 def test_chat_timeout_returns_json_502(mock_cls, client):
     instance = mock_cls.return_value
     instance.is_available.return_value = True
-    instance.chat.side_effect = requests.Timeout("read timed out")
+    instance.iter_chat.side_effect = requests.Timeout("read timed out")
     resp = client.post(
         "/api/chat",
         data=json.dumps({"persona": "no-nonsense-mentor", "message": "hi"}),
@@ -502,7 +523,7 @@ def test_chat_timeout_returns_json_502(mock_cls, client):
 def test_chat_truncated_json_returns_json_502(mock_cls, client):
     instance = mock_cls.return_value
     instance.is_available.return_value = True
-    instance.chat.side_effect = json.JSONDecodeError(
+    instance.iter_chat.side_effect = json.JSONDecodeError(
         "Expecting value", '{"message": {"content": "hel', 12
     )
     resp = client.post(
@@ -516,26 +537,55 @@ def test_chat_truncated_json_returns_json_502(mock_cls, client):
 
 
 @patch("server.OllamaClient")
+def test_chat_midstream_error_is_ndjson_and_saves_nothing(mock_cls, client, app):
+    instance = mock_cls.return_value
+    instance.is_available.return_value = True
+
+    def chunks(*_args, **_kwargs):
+        yield "partial"
+        raise requests.ConnectionError("reset")
+
+    instance.iter_chat.side_effect = chunks
+    resp = client.post(
+        "/api/chat",
+        data=json.dumps({"persona": "no-nonsense-mentor", "message": "hi"}),
+        content_type="application/json",
+    )
+    assert resp.status_code == 200
+    assert "ndjson" in resp.content_type
+    events = _chat_events(resp)
+    assert events[0] == {"token": "partial"}
+    assert events[-1] == {"error": "Lost connection to Ollama mid-request."}
+    logs = app._read_logs()
+    assert logs[0]["error"] == "Lost connection to Ollama mid-request."
+    assert "reply" not in logs[0]
+    conv_id = logs[0]["conversation_id"]
+    conn = app._db()
+    conv = conversation_store.get_conversation(conn, conv_id)
+    conn.close()
+    assert conv["messages"] == []
+
+
+@patch("server.OllamaClient")
 def test_chat_with_model_override_builds_named_variant(mock_cls, client):
     instance = mock_cls.return_value
     instance.is_available.return_value = True
-    instance.chat.return_value = "ok"
+    instance.iter_chat.return_value = ["ok"]
 
     body = json.dumps(
         {"persona": "no-nonsense-mentor", "message": "hi", "model_override": "qwen2.5:0.5b"}
     )
     resp = client.post("/api/chat", data=body, content_type="application/json")
 
-    assert resp.status_code == 200
-    data = resp.get_json()
+    data = _chat_done(resp)
     assert data["model_used"] == "no-nonsense-mentor--qwen2.5-0.5b"
 
     payload = instance.create_model.call_args[0][0]
     assert payload["model"] == "no-nonsense-mentor--qwen2.5-0.5b"
     assert payload["from"] == "qwen2.5:0.5b"
 
-    # chat() should be called against the variant name, not the persona name
-    call_args = instance.chat.call_args[0]
+    # iter_chat() should be called against the variant name, not the persona name
+    call_args = instance.iter_chat.call_args[0]
     assert call_args[0] == "no-nonsense-mentor--qwen2.5-0.5b"
 
 
@@ -646,14 +696,14 @@ def test_get_conversation_404_when_missing(client):
 def test_chat_without_conversation_id_creates_one_and_history_persists(mock_cls, client):
     instance = mock_cls.return_value
     instance.is_available.return_value = True
-    instance.chat.return_value = "Use REST unless you need federated queries."
+    instance.iter_chat.return_value = ["Use REST unless you need federated queries."]
 
     resp = client.post(
         "/api/chat",
         data=json.dumps({"persona": "no-nonsense-mentor", "message": "REST or GraphQL?"}),
         content_type="application/json",
     )
-    conv_id = resp.get_json()["conversation_id"]
+    conv_id = _chat_done(resp)["conversation_id"]
 
     listing = client.get("/api/conversations").get_json()
     assert any(c["id"] == conv_id for c in listing)
@@ -1609,7 +1659,7 @@ def test_admin_created_conversation_has_local_owner_id(client):
 def test_chat_from_lan_device_creates_conversation_owned_by_that_device(mock_cls, client, app):
     instance = mock_cls.return_value
     instance.is_available.return_value = True
-    instance.chat.return_value = "here's my answer"
+    instance.iter_chat.return_value = ["here's my answer"]
     token = _pair_device(app, "Phone A")
 
     resp = client.post(
@@ -1619,7 +1669,7 @@ def test_chat_from_lan_device_creates_conversation_owned_by_that_device(mock_cls
         environ_overrides=LAN_ENV,
         headers=_lan_headers(token),
     )
-    conv_id = resp.get_json()["conversation_id"]
+    conv_id = _chat_done(resp)["conversation_id"]
 
     # The owning device can keep chatting in it.
     resp2 = client.post(
