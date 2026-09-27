@@ -1,6 +1,6 @@
 {
-  "app_version": "0.5.0",
+  "app_version": "1.0.0",
   "catalog_version": "2026-10-01",
-  "message": "Example manifest for testing the opt-in update checker.",
+  "message": "Placeholder manifest. Set app_version to your own release, not a number copied from this example.",
   "notes_url": "https://github.com"
 }
